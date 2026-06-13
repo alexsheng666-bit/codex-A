@@ -1,0 +1,12 @@
+[
+  {
+    "code": "600519",
+    "buy_price": 1500.0,
+    "quantity": 100
+  },
+  {
+    "code": "000001",
+    "buy_price": 12.5,
+    "quantity": 500
+  }
+]

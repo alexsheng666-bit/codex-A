@@ -1,8 +1,8 @@
 {
-  "published_at": "2026-06-16 13:50:21",
+  "published_at": "2026-06-16 14:02:34",
   "trade_date": "2026-06-16",
   "freshness_status": "今日数据",
-  "candidate_count": 0,
+  "candidate_count": 20,
   "source": "东方财富行情快照",
   "report": "outputs/stock_report.html"
 }

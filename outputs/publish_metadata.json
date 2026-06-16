@@ -1,8 +1,8 @@
 {
-  "published_at": "2026-06-16 11:57:16",
-  "trade_date": "2026-06-15",
-  "freshness_status": "上一自然日数据",
-  "candidate_count": 27,
+  "published_at": "2026-06-16 12:30:25",
+  "trade_date": "2026-06-16",
+  "freshness_status": "今日数据",
+  "candidate_count": 35,
   "source": "本地股票池 + 新浪行情",
   "report": "outputs/stock_report.html"
 }

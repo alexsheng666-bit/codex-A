@@ -722,7 +722,7 @@ def build_html(data: Dict[str, object]) -> str:
       margin-top: 0;
     }}
     .paper-hero .paper-metrics {{
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
     }}
     .paper-actions, .detail-actions {{
       display: flex;
@@ -1191,7 +1191,7 @@ def build_html(data: Dict[str, object]) -> str:
     .paper-position em, .paper-trade em {{
       display: block;
       margin-top: 3px;
-      color: var(--teal);
+      color: var(--red);
       font-style: normal;
       font-weight: 700;
     }}
@@ -1300,12 +1300,174 @@ def build_html(data: Dict[str, object]) -> str:
     .detail-row em {{
       font-style: normal;
       font-weight: 800;
-      color: var(--teal);
+      color: var(--red);
       text-align: right;
       white-space: nowrap;
     }}
     .detail-row.weak em {{
       color: var(--green);
+    }}
+    .paper-ledger-grid {{
+      display: grid;
+      gap: 12px;
+    }}
+    .paper-filter-bar {{
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 8px;
+      align-items: end;
+    }}
+    .paper-filter-bar label {{
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }}
+    .paper-filter-bar input, .paper-filter-bar select {{
+      width: 100%;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--ink);
+      padding: 0 8px;
+      font: inherit;
+    }}
+    .paper-summary-grid {{
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }}
+    .paper-summary-item {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fafbfc;
+      padding: 10px;
+      min-width: 0;
+    }}
+    .paper-summary-item span {{
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }}
+    .paper-summary-item strong {{
+      display: block;
+      margin-top: 3px;
+      color: var(--ink);
+      font-size: 16px;
+      overflow-wrap: anywhere;
+    }}
+    .paper-summary-item.profit strong, .profit-text {{
+      color: var(--red);
+    }}
+    .paper-summary-item.loss strong, .loss-text {{
+      color: var(--green);
+    }}
+    .paper-table-wrap {{
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }}
+    .paper-table {{
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 860px;
+      background: #fff;
+      font-size: 12px;
+    }}
+    .paper-table th, .paper-table td {{
+      padding: 9px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }}
+    .paper-table th {{
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #f1f5f9;
+      color: #405065;
+      font-weight: 800;
+    }}
+    .paper-table tbody tr:last-child td {{
+      border-bottom: 0;
+    }}
+    .paper-table .note-cell {{
+      max-width: 280px;
+      white-space: normal;
+      color: var(--muted);
+      line-height: 1.35;
+    }}
+    .action-badge {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 44px;
+      height: 24px;
+      border-radius: 999px;
+      font-weight: 800;
+      border: 1px solid #c9d6e4;
+      background: #eef5fc;
+      color: #163e62;
+    }}
+    .action-badge.sell {{
+      border-color: #d1d5db;
+      background: #f3f4f6;
+      color: #374151;
+    }}
+    .calendar-grid {{
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 6px;
+    }}
+    .calendar-head {{
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-align: center;
+    }}
+    .calendar-day {{
+      min-height: 68px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fafbfc;
+      padding: 7px;
+      display: grid;
+      align-content: start;
+      gap: 4px;
+      cursor: pointer;
+    }}
+    .calendar-day.empty {{
+      background: transparent;
+      border-color: transparent;
+      cursor: default;
+    }}
+    .calendar-day.today {{
+      border-color: var(--blue);
+      box-shadow: inset 0 0 0 1px var(--blue);
+    }}
+    .calendar-day.profit {{
+      background: #fff5f5;
+      border-color: #efc8c8;
+    }}
+    .calendar-day.loss {{
+      background: #f0fdf4;
+      border-color: #bbf7d0;
+    }}
+    .calendar-day strong {{
+      font-size: 13px;
+    }}
+    .calendar-day span {{
+      display: block;
+      font-size: 12px;
+      font-weight: 800;
+    }}
+    .calendar-day em {{
+      color: var(--muted);
+      font-size: 11px;
+      font-style: normal;
     }}
     body.detail-open {{
       overflow: hidden;
@@ -1392,6 +1554,8 @@ def build_html(data: Dict[str, object]) -> str:
       .cards {{ grid-template-columns: 1fr; }}
       .paper-hero .paper-metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .focus-price-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .paper-filter-bar {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+      .paper-summary-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .detail-row {{ grid-template-columns: 1fr; }}
       .detail-row em {{ text-align: left; }}
     }}
@@ -1409,6 +1573,10 @@ def build_html(data: Dict[str, object]) -> str:
       .focus-price-grid {{ grid-template-columns: 1fr; }}
       .paper-hero .paper-metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .paper-metric strong {{ font-size: 14px; }}
+      .paper-filter-bar {{ grid-template-columns: 1fr; }}
+      .paper-summary-grid {{ grid-template-columns: 1fr; }}
+      .calendar-grid {{ gap: 4px; }}
+      .calendar-day {{ min-height: 58px; padding: 5px; }}
       .candidate-head {{ grid-template-columns: 1fr auto; }}
       .pool {{ width: auto; height: 32px; padding: 0 10px; grid-column: 1 / -1; }}
       .change {{ font-size: 20px; }}
@@ -2149,8 +2317,6 @@ def build_html(data: Dict[str, object]) -> str:
       const unrealized = numberValue(perf.unrealized_pnl);
       const metrics = [
         ['当前权益', money(perf.equity)],
-        ['现金', money(perf.cash)],
-        ['持仓市值', money(perf.market_value)],
         ['累计盈亏', `${{cumulative >= 0 ? '+' : ''}}${{money(cumulative)}}`, cumulative >= 0 ? 'profit' : 'loss'],
         ['浮动盈亏', `${{unrealized >= 0 ? '+' : ''}}${{money(unrealized)}}`, unrealized >= 0 ? 'profit' : 'loss']
       ];
@@ -2158,9 +2324,9 @@ def build_html(data: Dict[str, object]) -> str:
         <div class="paper-metrics">
           ${{metrics.map(([label, value, tone]) => `<div class="paper-metric ${{tone || ''}}"><span>${{escapeHtml(label)}}</span><strong>${{escapeHtml(value)}}</strong></div>`).join('')}}
         </div>
-        <div class="paper-note">持仓 ${{positions.length}} 只 · 现金 ${{money(perf.cash)}} · ${{escapeHtml(perf.note || '实时模拟盘运行中')}}</div>
+        <div class="paper-note">持仓 ${{positions.length}} 只 · 今日交易 ${{(snapshot.ledger || []).filter(row => row.trade_date === data.trade_date).length}} 笔 · ${{escapeHtml(perf.note || '实时模拟盘运行中')}}</div>
         <div class="paper-actions">
-          <button class="paper-detail-button" type="button" data-paper-detail="account">查看模拟盘详情</button>
+          <button class="paper-detail-button" type="button" data-paper-detail="account">查看模拟交易账本</button>
         </div>
       `;
       boxes.forEach(box => {{
@@ -2197,6 +2363,184 @@ def build_html(data: Dict[str, object]) -> str:
       return `<div class="detail-card"><h3>${{escapeHtml(title)}}</h3><p>${{escapeHtml(text)}}</p></div>`;
     }}
 
+    function signedMoney(value) {{
+      const n = numberValue(value);
+      return `${{n >= 0 ? '+' : ''}}${{money(n)}}`;
+    }}
+
+    function pnlTone(value) {{
+      const n = numberValue(value);
+      if (n > 0) return 'profit';
+      if (n < 0) return 'loss';
+      return '';
+    }}
+
+    function tradeTime(row) {{
+      const direct = String(row.trade_time || row.time || '').trim();
+      if (direct) return direct;
+      const note = String(row.note || '');
+      const found = note.match(/(\\d{{1,2}}:\\d{{2}})/);
+      if (found) return found[1].padStart(5, '0');
+      return row.action === 'BUY' ? '14:57' : '-';
+    }}
+
+    function paperPnlAmount(row) {{
+      return row.action === 'BUY'
+        ? numberValue(row.latest_pnl_amount || row.pnl_amount)
+        : numberValue(row.pnl_amount);
+    }}
+
+    function paperPnlPct(row) {{
+      return row.action === 'BUY'
+        ? numberValue(row.latest_pnl_pct || row.pnl_pct)
+        : numberValue(row.pnl_pct);
+    }}
+
+    function sortedPaperLedger(ledger) {{
+      return ledger.slice().sort((a, b) => {{
+        const left = `${{a.trade_date || ''}} ${{tradeTime(a)}} ${{a.action || ''}} ${{a.stock_code || ''}}`;
+        const right = `${{b.trade_date || ''}} ${{tradeTime(b)}} ${{b.action || ''}} ${{b.stock_code || ''}}`;
+        return right.localeCompare(left);
+      }});
+    }}
+
+    function paperDailyPnl(ledger) {{
+      const byDate = new Map();
+      ledger.forEach(row => {{
+        const date = String(row.trade_date || '').trim();
+        if (!date) return;
+        const current = byDate.get(date) || {{ pnl: 0, trades: 0 }};
+        current.trades += 1;
+        if (row.action === 'SELL') current.pnl += numberValue(row.pnl_amount);
+        byDate.set(date, current);
+      }});
+      return byDate;
+    }}
+
+    function paperMonthlyCalendar(ledger) {{
+      const daily = paperDailyPnl(ledger);
+      const dates = Array.from(daily.keys()).sort();
+      const month = (data.trade_date || dates[dates.length - 1] || new Date().toISOString().slice(0, 10)).slice(0, 7);
+      const first = new Date(`${{month}}-01T00:00:00`);
+      const daysInMonth = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+      const offset = (first.getDay() + 6) % 7;
+      const today = new Date().toISOString().slice(0, 10);
+      const headers = ['一', '二', '三', '四', '五', '六', '日'].map(day => `<div class="calendar-head">${{day}}</div>`).join('');
+      const blanks = Array.from({{ length: offset }}, () => '<div class="calendar-day empty"></div>').join('');
+      const days = Array.from({{ length: daysInMonth }}, (_, index) => {{
+        const day = index + 1;
+        const date = `${{month}}-${{String(day).padStart(2, '0')}}`;
+        const item = daily.get(date) || {{ pnl: 0, trades: 0 }};
+        const tone = item.pnl > 0 ? 'profit' : item.pnl < 0 ? 'loss' : '';
+        const todayClass = date === today ? 'today' : '';
+        const amount = item.trades ? `<span class="${{pnlTone(item.pnl)}}-text">${{signedMoney(item.pnl)}}</span><em>${{item.trades}} 笔交易</em>` : '<em>无交易</em>';
+        return `<button class="calendar-day ${{tone}} ${{todayClass}}" type="button" data-calendar-date="${{date}}"><strong>${{day}}</strong>${{amount}}</button>`;
+      }}).join('');
+      return `<div class="calendar-grid">${{headers}}${{blanks}}${{days}}</div>`;
+    }}
+
+    function paperStockSummary(ledger) {{
+      const map = new Map();
+      ledger.forEach(row => {{
+        const key = `${{row.stock_code || '-'}} ${{row.stock_name || ''}}`;
+        const item = map.get(key) || {{ code: row.stock_code || '-', name: row.stock_name || '', buys: 0, sells: 0, amount: 0, pnl: 0 }};
+        if (row.action === 'BUY') item.buys += 1;
+        if (row.action === 'SELL') {{
+          item.sells += 1;
+          item.pnl += numberValue(row.pnl_amount);
+        }}
+        item.amount += numberValue(row.amount);
+        map.set(key, item);
+      }});
+      const rows = Array.from(map.values()).sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl));
+      if (!rows.length) return '<div class="paper-note">暂无股票汇总。</div>';
+      return `
+        <div class="paper-table-wrap">
+          <table class="paper-table">
+            <thead><tr><th>股票</th><th>买入</th><th>卖出</th><th>累计成交</th><th>已实现盈亏</th></tr></thead>
+            <tbody>
+              ${{rows.map(row => `
+                <tr>
+                  <td><strong>${{escapeHtml(row.code)}} ${{escapeHtml(row.name)}}</strong></td>
+                  <td>${{row.buys}}</td>
+                  <td>${{row.sells}}</td>
+                  <td>${{money(row.amount)}}</td>
+                  <td class="${{pnlTone(row.pnl)}}-text">${{signedMoney(row.pnl)}}</td>
+                </tr>
+              `).join('')}}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }}
+
+    function bindPaperLedgerControls() {{
+      const tableBody = document.getElementById('paperLedgerRows');
+      if (!tableBody) return;
+      const ledger = sortedPaperLedger(paperSnapshot().ledger || []);
+      const controls = {{
+        from: document.getElementById('paperFilterFrom'),
+        to: document.getElementById('paperFilterTo'),
+        stock: document.getElementById('paperFilterStock'),
+        action: document.getElementById('paperFilterAction'),
+        result: document.getElementById('paperFilterResult'),
+        sort: document.getElementById('paperSort')
+      }};
+      const render = () => {{
+        const query = String(controls.stock.value || '').trim().toLowerCase();
+        let rows = ledger.filter(row => {{
+          const date = String(row.trade_date || '');
+          if (controls.from.value && date < controls.from.value) return false;
+          if (controls.to.value && date > controls.to.value) return false;
+          if (controls.action.value !== 'ALL' && row.action !== controls.action.value) return false;
+          if (query && !`${{row.stock_code || ''}} ${{row.stock_name || ''}}`.toLowerCase().includes(query)) return false;
+          const pnl = paperPnlAmount(row);
+          if (controls.result.value === 'PROFIT' && pnl <= 0) return false;
+          if (controls.result.value === 'LOSS' && pnl >= 0) return false;
+          return true;
+        }});
+        rows.sort((a, b) => {{
+          if (controls.sort.value === 'pnl_desc') return paperPnlAmount(b) - paperPnlAmount(a);
+          if (controls.sort.value === 'pnl_asc') return paperPnlAmount(a) - paperPnlAmount(b);
+          if (controls.sort.value === 'pct_desc') return paperPnlPct(b) - paperPnlPct(a);
+          if (controls.sort.value === 'pct_asc') return paperPnlPct(a) - paperPnlPct(b);
+          if (controls.sort.value === 'amount_desc') return numberValue(b.amount) - numberValue(a.amount);
+          return `${{b.trade_date || ''}} ${{tradeTime(b)}}`.localeCompare(`${{a.trade_date || ''}} ${{tradeTime(a)}}`);
+        }});
+        tableBody.innerHTML = rows.length ? rows.map(row => {{
+          const pnl = paperPnlAmount(row);
+          const actionLabel = row.action === 'SELL' ? '卖出' : '买入';
+          const actionClass = row.action === 'SELL' ? 'sell' : 'buy';
+          return `
+            <tr>
+              <td>${{escapeHtml(row.trade_date || '-')}}</td>
+              <td>${{escapeHtml(tradeTime(row))}}</td>
+              <td><span class="action-badge ${{actionClass}}">${{actionLabel}}</span></td>
+              <td><strong>${{escapeHtml(row.stock_code || '-')}} ${{escapeHtml(row.stock_name || '')}}</strong></td>
+              <td>${{escapeHtml(row.price || '-')}}</td>
+              <td>${{escapeHtml(row.shares || '-')}}</td>
+              <td>${{money(row.amount)}}</td>
+              <td class="${{pnlTone(pnl)}}-text">${{signedMoney(pnl)}}</td>
+              <td class="${{pnlTone(pnl)}}-text">${{pct(paperPnlPct(row))}}</td>
+              <td class="note-cell">${{escapeHtml(row.note || '-')}}</td>
+            </tr>
+          `;
+        }}).join('') : '<tr><td colspan="10">没有符合条件的交易记录。</td></tr>';
+      }};
+      Object.values(controls).forEach(control => control.addEventListener('input', render));
+      Object.values(controls).forEach(control => control.addEventListener('change', render));
+      document.querySelectorAll('[data-calendar-date]').forEach(button => {{
+        button.addEventListener('click', () => {{
+          const date = button.dataset.calendarDate;
+          controls.from.value = date;
+          controls.to.value = date;
+          render();
+          document.getElementById('paperLedgerTableCard')?.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+        }});
+      }});
+      render();
+    }}
+
     function openCandidateDetail(index, section) {{
       const row = data.candidates[Number(index)];
       if (!row) return;
@@ -2227,6 +2571,15 @@ def build_html(data: Dict[str, object]) -> str:
       const perf = snapshot.perf || {{}};
       const positions = snapshot.positions || [];
       const ledger = snapshot.ledger || [];
+      const realized = ledger.filter(row => row.action === 'SELL').reduce((sum, row) => sum + numberValue(row.pnl_amount), 0);
+      const sellRows = ledger.filter(row => row.action === 'SELL');
+      const wins = sellRows.filter(row => numberValue(row.pnl_amount) > 0).length;
+      const winRate = sellRows.length ? wins / sellRows.length * 100 : 0;
+      const biggestWin = sellRows.reduce((max, row) => Math.max(max, numberValue(row.pnl_amount)), 0);
+      const biggestLoss = sellRows.reduce((min, row) => Math.min(min, numberValue(row.pnl_amount)), 0);
+      const dates = Array.from(new Set(ledger.map(row => row.trade_date).filter(Boolean))).sort();
+      const earliest = dates[0] || '';
+      const latest = dates[dates.length - 1] || '';
       const positionRows = positions.length
         ? positions.map(row => {{
             const pnl = numberValue(row.unrealized_pnl);
@@ -2241,65 +2594,50 @@ def build_html(data: Dict[str, object]) -> str:
             `;
           }}).join('')
         : '<div class="paper-note">当前空仓。未到尾盘窗口或当天没有重点关注时不会建仓。</div>';
-      const buyRows = ledger.filter(row => row.action === 'BUY');
-      const buyRecordRows = buyRows.length
-        ? buyRows.slice().reverse().map(row => {{
-            const latestPnl = numberValue(row.latest_pnl_amount || row.pnl_amount);
-            const latestPrice = row.latest_price || row.price || '-';
-            return `
-              <div class="detail-row ${{latestPnl < 0 ? 'weak' : ''}}">
-                <div>
-                  <strong>${{escapeHtml(row.trade_date)}} BUY ${{escapeHtml(row.stock_code)}} ${{escapeHtml(row.stock_name)}}</strong>
-                  <span>${{escapeHtml(row.shares)}} 股 · 买入 ${{escapeHtml(row.price)}} · 最新 ${{escapeHtml(latestPrice)}} · 金额 ${{money(row.amount)}} · ${{escapeHtml(row.note || '尾盘模拟买入')}}</span>
-                </div>
-                <em>${{latestPnl >= 0 ? '+' : ''}}${{money(latestPnl)}} / ${{pct(row.latest_pnl_pct)}}</em>
-              </div>
-            `;
-          }}).join('')
-        : '<div class="paper-note">暂无买入记录。只有 A 池在尾盘执行后才会出现在这里。</div>';
-      const fullLedgerRows = ledger.length
-        ? ledger.slice().reverse().map(row => {{
-            const latestPnl = numberValue(row.latest_pnl_amount || row.pnl_amount);
-            const latestPrice = row.latest_price || row.price || '-';
-            const resultText = row.action === 'BUY'
-              ? `${{latestPnl >= 0 ? '+' : ''}}${{money(latestPnl)}} / ${{pct(row.latest_pnl_pct)}}`
-              : `${{numberValue(row.pnl_amount) >= 0 ? '+' : ''}}${{money(row.pnl_amount)}} / ${{pct(row.pnl_pct)}}`;
-            return `
-              <div class="detail-row ${{latestPnl < 0 ? 'weak' : ''}}">
-                <div>
-                  <strong>${{escapeHtml(row.trade_date)}} ${{escapeHtml(row.action)}} ${{escapeHtml(row.stock_code)}} ${{escapeHtml(row.stock_name)}}</strong>
-                  <span>${{escapeHtml(row.shares)}} 股 · 成交 ${{escapeHtml(row.price)}} · 最新 ${{escapeHtml(latestPrice)}} · 金额 ${{money(row.amount)}}</span>
-                </div>
-                <em>${{escapeHtml(resultText)}}</em>
-              </div>
-            `;
-          }}).join('')
-        : '<div class="paper-note">暂无完整交易流水。</div>';
-      const sellRows = ledger.filter(row => row.action === 'SELL');
-      const sellDisciplineRows = sellRows.length
-        ? sellRows.slice().reverse().map(row => {{
-            const pnl = numberValue(row.pnl_amount);
-            return `
-              <div class="detail-row ${{pnl < 0 ? 'weak' : ''}}">
-                <div>
-                  <strong>${{escapeHtml(row.trade_date)}} ${{escapeHtml(row.stock_code)}} ${{escapeHtml(row.stock_name)}}</strong>
-                  <span>${{escapeHtml(row.note || '按 T+1 卖出纪律执行')}} · 卖出 ${{escapeHtml(row.price)}} · ${{escapeHtml(row.shares)}} 股</span>
-                </div>
-                <em>${{pnl >= 0 ? '+' : ''}}${{money(pnl)}} / ${{pct(row.pnl_pct)}}</em>
-              </div>
-            `;
-          }}).join('')
-        : '<div class="paper-note">暂无卖出纪律执行记录。T+1 卖出后会在这里显示触发原因。</div>';
-      openDetailPage('模拟盘详情', `
-        <div class="detail-card">
-          <h3>账户核心</h3>
-          <p>当前权益：${{money(perf.equity)}}\n现金：${{money(perf.cash)}}\n持仓市值：${{money(perf.market_value)}}\n累计盈亏：${{numberValue(perf.cumulative_pnl) >= 0 ? '+' : ''}}${{money(perf.cumulative_pnl)}} / ${{pct(perf.cumulative_return_pct)}}\n更新时间：${{escapeHtml(perf.last_updated || data.generated_at || '-')}}</p>
+      openDetailPage('模拟交易账本', `
+        <div class="paper-ledger-grid">
+          <div class="detail-card">
+            <h3>账户总览</h3>
+            <div class="paper-summary-grid">
+              <div class="paper-summary-item"><span>当前权益</span><strong>${{money(perf.equity)}}</strong></div>
+              <div class="paper-summary-item"><span>现金 / 持仓市值</span><strong>${{money(perf.cash)}} / ${{money(perf.market_value)}}</strong></div>
+              <div class="paper-summary-item ${{pnlTone(perf.cumulative_pnl)}}"><span>累计盈亏</span><strong>${{signedMoney(perf.cumulative_pnl)}} / ${{pct(perf.cumulative_return_pct)}}</strong></div>
+              <div class="paper-summary-item ${{pnlTone(perf.unrealized_pnl)}}"><span>浮动盈亏</span><strong>${{signedMoney(perf.unrealized_pnl)}}</strong></div>
+              <div class="paper-summary-item ${{pnlTone(realized)}}"><span>已实现盈亏</span><strong>${{signedMoney(realized)}}</strong></div>
+              <div class="paper-summary-item"><span>交易笔数</span><strong>${{ledger.length}} 笔</strong></div>
+              <div class="paper-summary-item"><span>卖出胜率</span><strong>${{pct(winRate)}}</strong></div>
+              <div class="paper-summary-item"><span>最大单笔盈亏</span><strong><span class="profit-text">${{signedMoney(biggestWin)}}</span> / <span class="loss-text">${{signedMoney(biggestLoss)}}</span></strong></div>
+            </div>
+            <p>更新时间：${{escapeHtml(perf.last_updated || data.generated_at || '-')}}</p>
+          </div>
+          <div class="detail-card">
+            <h3>月度盈亏日历</h3>
+            ${{paperMonthlyCalendar(ledger)}}
+          </div>
+          <div class="detail-card" id="paperLedgerTableCard">
+            <h3>交易记录</h3>
+            <div class="paper-filter-bar">
+              <label>开始日期<input id="paperFilterFrom" type="date" value="${{escapeHtml(earliest)}}"></label>
+              <label>结束日期<input id="paperFilterTo" type="date" value="${{escapeHtml(latest)}}"></label>
+              <label>股票筛选<input id="paperFilterStock" placeholder="代码或名称"></label>
+              <label>买卖方向<select id="paperFilterAction"><option value="ALL">全部</option><option value="BUY">买入</option><option value="SELL">卖出</option></select></label>
+              <label>盈亏筛选<select id="paperFilterResult"><option value="ALL">全部</option><option value="PROFIT">盈利</option><option value="LOSS">亏损</option></select></label>
+              <label>排序<select id="paperSort"><option value="time_desc">时间最新</option><option value="pnl_desc">利润值高到低</option><option value="pnl_asc">利润值低到高</option><option value="pct_desc">利润率高到低</option><option value="pct_asc">利润率低到高</option><option value="amount_desc">成交额高到低</option></select></label>
+            </div>
+            <div class="paper-table-wrap" style="margin-top:10px">
+              <table class="paper-table">
+                <thead>
+                  <tr><th>日期</th><th>时间</th><th>方向</th><th>股票</th><th>价格</th><th>数量</th><th>成交额</th><th>利润值</th><th>利润率</th><th>说明</th></tr>
+                </thead>
+                <tbody id="paperLedgerRows"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="detail-card"><h3>当前持仓</h3><div class="detail-list">${{positionRows}}</div></div>
+          <div class="detail-card"><h3>按股票汇总</h3>${{paperStockSummary(ledger)}}</div>
         </div>
-        <div class="detail-card"><h3>当前持仓</h3><div class="detail-list">${{positionRows}}</div></div>
-        <div class="detail-card"><h3>次日卖出纪律执行日志</h3><div class="detail-list">${{sellDisciplineRows}}</div></div>
-        <div class="detail-card"><h3>购买记录</h3><div class="detail-list">${{buyRecordRows}}</div></div>
-        <div class="detail-card"><h3>完整交易流水</h3><div class="detail-list">${{fullLedgerRows}}</div></div>
       `);
+      bindPaperLedgerControls();
     }}
 
     function renderRuleConfig() {{

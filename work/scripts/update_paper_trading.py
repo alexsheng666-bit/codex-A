@@ -135,6 +135,10 @@ def quote_price(row: Dict[str, str] | None, fallback: float) -> float:
     return num(row.get("close"), fallback) or fallback
 
 
+def paper_sell_rule() -> str:
+    return f"严格遵守 T+1：当日尾盘买入，最早次日按止盈/止损纪律退出；未触发则 {TIME_EXIT_LABEL} 时间止损全部卖出"
+
+
 def can_time_exit(current_trade_date: str, now: datetime) -> bool:
     try:
         parsed = parse_date(current_trade_date)
@@ -314,7 +318,7 @@ def buy_today_a_pool(
             "first_take_profit_point": row.get("first_take_profit_point", ""),
             "defensive_stop_point": row.get("defensive_stop_point", ""),
             "first_take_done": False,
-            "sell_rule": "严格遵守 T+1：当日尾盘买入，最早次日按卖出纪律退出",
+            "sell_rule": paper_sell_rule(),
         }
         positions.append(position)
         append_ledger(
@@ -353,6 +357,7 @@ def mark_to_market(state: Dict[str, object], quotes: Dict[str, Dict[str, str]]) 
         position["market_value"] = value
         position["unrealized_pnl"] = pnl
         position["unrealized_return_pct"] = pnl_pct
+        position["sell_rule"] = paper_sell_rule()
         market_value += value
         unrealized += pnl
         positions.append(position)

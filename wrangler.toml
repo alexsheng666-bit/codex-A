@@ -5,4 +5,4 @@ compatibility_date = "2026-06-17"
 [vars]
 GITHUB_OWNER = "alexsheng666-bit"
 GITHUB_REPO = "codex-A"
-ALLOWED_ORIGIN = "https://alexsheng666-bit.github.io"
+ALLOWED_ORIGINS = "https://alexsheng666-bit.github.io,https://alexsheng666.com,https://www.alexsheng666.com"

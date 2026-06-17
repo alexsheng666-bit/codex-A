@@ -5,14 +5,32 @@
 // - GITHUB_OWNER: alexsheng666-bit
 // - GITHUB_REPO: codex-A
 // - ALLOWED_ORIGIN: https://alexsheng666-bit.github.io
+// - ALLOWED_ORIGINS: optional comma-separated origins, e.g.
+//   https://alexsheng666-bit.github.io,https://alexsheng666.com,https://www.alexsheng666.com
 
-function corsHeaders(env) {
+function allowedOrigins(env) {
+  const configured = env.ALLOWED_ORIGINS || env.ALLOWED_ORIGIN || "https://alexsheng666-bit.github.io";
+  return configured
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+}
+
+function corsOrigin(request, env) {
+  const requestOrigin = (request.headers.get("Origin") || "").replace(/\/$/, "");
+  const origins = allowedOrigins(env);
+  if (requestOrigin && origins.includes(requestOrigin)) return requestOrigin;
+  return origins[0] || "https://alexsheng666-bit.github.io";
+}
+
+function corsHeaders(request, env) {
   return {
-    "Access-Control-Allow-Origin": env.ALLOWED_ORIGIN || "https://alexsheng666-bit.github.io",
+    "Access-Control-Allow-Origin": corsOrigin(request, env),
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
+    "Vary": "Origin",
   };
 }
 
@@ -121,7 +139,7 @@ async function handleQuotes(request, env) {
   if (!symbols.length) {
     return new Response(JSON.stringify({ ok: false, message: "Missing codes." }), {
       status: 400,
-      headers: corsHeaders(env),
+      headers: corsHeaders(request, env),
     });
   }
   const secids = codes.map(eastmoneySecid).filter(Boolean);
@@ -149,7 +167,7 @@ async function handleQuotes(request, env) {
   if (!Object.keys(quotes).length) {
     return new Response(JSON.stringify({ ok: false, message: "Quote fetch failed." }), {
       status: 502,
-      headers: corsHeaders(env),
+      headers: corsHeaders(request, env),
     });
   }
   return new Response(
@@ -160,14 +178,14 @@ async function handleQuotes(request, env) {
       quotes,
       warnings: errors,
     }),
-    { status: 200, headers: corsHeaders(env) },
+    { status: 200, headers: corsHeaders(request, env) },
   );
 }
 
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders(env) });
+      return new Response(null, { status: 204, headers: corsHeaders(request, env) });
     }
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/quotes") {
@@ -176,7 +194,7 @@ export default {
     if (request.method !== "POST") {
       return new Response(JSON.stringify({ ok: false, message: "Only POST is allowed." }), {
         status: 405,
-        headers: corsHeaders(env),
+        headers: corsHeaders(request, env),
       });
     }
 
@@ -186,7 +204,7 @@ export default {
     if (!token) {
       return new Response(JSON.stringify({ ok: false, message: "Worker missing GITHUB_TOKEN." }), {
         status: 500,
-        headers: corsHeaders(env),
+        headers: corsHeaders(request, env),
       });
     }
 
@@ -209,7 +227,7 @@ export default {
       const detail = await response.text();
       return new Response(JSON.stringify({ ok: false, message: "GitHub trigger failed.", detail }), {
         status: 502,
-        headers: corsHeaders(env),
+        headers: corsHeaders(request, env),
       });
     }
 
@@ -218,7 +236,7 @@ export default {
         ok: true,
         message: "云端刷新已启动，通常 1-3 分钟后固定链接会更新。",
       }),
-      { status: 200, headers: corsHeaders(env) },
+      { status: 200, headers: corsHeaders(request, env) },
     );
   },
 };

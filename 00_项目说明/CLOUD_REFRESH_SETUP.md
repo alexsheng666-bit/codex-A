@@ -41,10 +41,28 @@ Worker 变量：
 - `GITHUB_TOKEN`: GitHub fine-grained token，需要当前仓库 Contents 读写、Actions 读写权限
 - `GITHUB_OWNER`: `alexsheng666-bit`
 - `GITHUB_REPO`: `codex-A`
-- `ALLOWED_ORIGIN`: `https://alexsheng666-bit.github.io`
+- `ALLOWED_ORIGINS`: `https://alexsheng666-bit.github.io,https://alexsheng666.com,https://www.alexsheng666.com`
 
 部署 Worker 后，把 Worker 的公开地址写入：
 
 `work/cloud/refresh_endpoint.txt`
 
 然后重新发布看板。此后固定链接里的“刷新数据”按钮会触发云端 GitHub Actions 刷新。
+
+
+## 域名优化补充
+
+`alexsheng666.com` 认证通过后，推荐先只把实时行情接口绑定到 Worker 自定义域名：
+
+```text
+https://quote.alexsheng666.com
+```
+
+主看板可以暂时继续使用 GitHub Pages 固定链接。等 `quote.alexsheng666.com/quotes?codes=002185` 测试返回 `ok: true` 后，再把 `work/cloud/quote_endpoints.txt` 改成：
+
+```text
+https://quote.alexsheng666.com
+https://codex-a-refresh.alexsheng666.workers.dev
+```
+
+这样页面会优先使用专属域名，旧 Worker 地址保留为备用通道。

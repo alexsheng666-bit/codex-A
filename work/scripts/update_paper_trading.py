@@ -23,6 +23,8 @@ REPORT_PATH = PAPER_DIR / "paper_trading_report.md"
 INITIAL_CAPITAL = 1_000_000.0
 BUY_AFTER = time(14, 57)
 BUY_TIME_LABEL = "14:57"
+TIME_EXIT_AFTER = time(14, 30)
+TIME_EXIT_LABEL = "14:30"
 LOT_SIZE = 100
 DEFAULT_TAKE_PROFIT_PCT = 2.0
 DEFAULT_STOP_LOSS_PCT = 2.5
@@ -133,7 +135,19 @@ def quote_price(row: Dict[str, str] | None, fallback: float) -> float:
     return num(row.get("close"), fallback) or fallback
 
 
-def sell_decision(position: Dict[str, object], quote: Dict[str, str]) -> tuple[float, str]:
+def can_time_exit(current_trade_date: str, now: datetime) -> bool:
+    try:
+        parsed = parse_date(current_trade_date)
+    except ValueError:
+        return False
+    if parsed < now.date():
+        return True
+    if parsed > now.date():
+        return False
+    return now.time() >= TIME_EXIT_AFTER
+
+
+def sell_decision(position: Dict[str, object], quote: Dict[str, str], current_trade_date: str, now: datetime) -> tuple[float, str]:
     entry_price = float(position.get("entry_price", 0.0))
     open_price = num(quote.get("open"), entry_price) or entry_price
     high = num(quote.get("high"), open_price) or open_price
@@ -148,9 +162,9 @@ def sell_decision(position: Dict[str, object], quote: Dict[str, str]) -> tuple[f
         return defensive_stop, "T+1 次日触发防守止损，按止损点近似卖出"
     if high >= first_take and not position.get("first_take_done"):
         return first_take, "T+1 次日触发第一止盈，按第一止盈点卖出"
-    if close < entry_price:
-        return close, "T+1 次日 10:30 前未走强，按当日快照收盘价近似退出"
-    return 0.0, "T+1 次日未触发止盈止损，强势仓位继续跟踪"
+    if can_time_exit(current_trade_date, now):
+        return close, f"T+1 次日未触发止盈止损，{TIME_EXIT_LABEL} 时间止损全部卖出"
+    return 0.0, f"T+1 次日未触发止盈止损，等待 {TIME_EXIT_LABEL} 时间止损"
 
 
 def append_ledger(
@@ -189,6 +203,7 @@ def close_old_positions(
     ledger: List[Dict[str, object]],
     current_trade_date: str,
     quotes: Dict[str, Dict[str, str]],
+    now: datetime,
 ) -> None:
     cash = float(state.get("cash", 0.0))
     realized_total = float(state.get("realized_pnl", 0.0))
@@ -205,7 +220,7 @@ def close_old_positions(
         if not quote:
             positions.append(position)
             continue
-        sell_price, sell_note = sell_decision(position, quote)
+        sell_price, sell_note = sell_decision(position, quote, current_trade_date, now)
         if sell_price <= 0:
             positions.append(position)
             continue
@@ -438,8 +453,8 @@ def main() -> None:
     state = load_state(args.initial_capital)
     ledger: List[Dict[str, object]] = list(read_ledger())
 
-    close_old_positions(state, ledger, trade_date, quotes)
     now = datetime.now()
+    close_old_positions(state, ledger, trade_date, quotes, now)
     note = "未到14:57，等待尾盘模拟买入"
     if can_buy_tail(trade_date, now):
         before_buys = len([row for row in ledger if row.get("action") == "BUY"])

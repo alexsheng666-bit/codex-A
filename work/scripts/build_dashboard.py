@@ -1560,12 +1560,12 @@ def build_html(data: Dict[str, object]) -> str:
       cursor: default;
     }}
     .calendar-day.closed {{
-      background: #f1f5f9;
-      border-color: #d8e0ea;
-      color: #7b8794;
+      background: #e0f2fe;
+      border-color: #38bdf8;
+      color: #075985;
     }}
     .calendar-day.closed strong {{
-      color: #5f6b7a;
+      color: #075985;
     }}
     .calendar-day.today {{
       border-color: var(--blue);
@@ -1580,8 +1580,8 @@ def build_html(data: Dict[str, object]) -> str:
       border-color: #bbf7d0;
     }}
     .calendar-day.closed.profit, .calendar-day.closed.loss {{
-      background: #f1f5f9;
-      border-color: #cbd5e1;
+      background: #e0f2fe;
+      border-color: #38bdf8;
     }}
     .calendar-day strong {{
       font-size: 13px;

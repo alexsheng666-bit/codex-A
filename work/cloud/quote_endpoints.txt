@@ -1,2 +1,3 @@
-# 行情接口按顺序尝试：域名通过后，把专属域名放到第一行，workers.dev 保留作备用。
+# 行情接口按顺序尝试：专属域名优先，workers.dev 保留作备用。
+https://quote.alexsheng666.com
 https://codex-a-refresh.alexsheng666.workers.dev

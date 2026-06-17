@@ -103,6 +103,15 @@ function parseEastmoneyQuotes(payload) {
   return quotes;
 }
 
+function decodeSinaText(buffer) {
+  for (const encoding of ["gb18030", "gbk", "gb2312"]) {
+    try {
+      return new TextDecoder(encoding).decode(buffer);
+    } catch (error) {}
+  }
+  return new TextDecoder("utf-8").decode(buffer);
+}
+
 async function fetchSinaQuotes(symbols) {
   const quoteUrl = `https://hq.sinajs.cn/list=${symbols.join(",")}`;
   const response = await fetch(quoteUrl, {
@@ -112,7 +121,7 @@ async function fetchSinaQuotes(symbols) {
     },
   });
   if (!response.ok) throw new Error("Sina quote fetch failed.");
-  return parseSinaQuotes(await response.text());
+  return parseSinaQuotes(decodeSinaText(await response.arrayBuffer()));
 }
 
 async function fetchEastmoneyQuotes(secids) {

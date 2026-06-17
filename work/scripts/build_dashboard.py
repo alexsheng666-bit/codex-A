@@ -1503,6 +1503,35 @@ def build_html(data: Dict[str, object]) -> str:
       background: #f3f4f6;
       color: #374151;
     }}
+    .calendar-toolbar {{
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 4px 0 12px;
+      flex-wrap: wrap;
+    }}
+    .calendar-toolbar label {{
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }}
+    .calendar-toolbar input {{
+      min-width: 150px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font: inherit;
+      color: var(--ink);
+      background: #fff;
+    }}
+    .calendar-legend {{
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }}
     .calendar-grid {{
       display: grid;
       grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -1530,6 +1559,14 @@ def build_html(data: Dict[str, object]) -> str:
       border-color: transparent;
       cursor: default;
     }}
+    .calendar-day.closed {{
+      background: #f1f5f9;
+      border-color: #d8e0ea;
+      color: #7b8794;
+    }}
+    .calendar-day.closed strong {{
+      color: #5f6b7a;
+    }}
     .calendar-day.today {{
       border-color: var(--blue);
       box-shadow: inset 0 0 0 1px var(--blue);
@@ -1541,6 +1578,10 @@ def build_html(data: Dict[str, object]) -> str:
     .calendar-day.loss {{
       background: #f0fdf4;
       border-color: #bbf7d0;
+    }}
+    .calendar-day.closed.profit, .calendar-day.closed.loss {{
+      background: #f1f5f9;
+      border-color: #cbd5e1;
     }}
     .calendar-day strong {{
       font-size: 13px;
@@ -1662,6 +1703,8 @@ def build_html(data: Dict[str, object]) -> str:
       .paper-filter-bar {{ grid-template-columns: 1fr; }}
       .paper-summary-grid {{ grid-template-columns: 1fr; }}
       .calendar-grid {{ gap: 4px; }}
+      .calendar-toolbar {{ align-items: stretch; }}
+      .calendar-toolbar label, .calendar-toolbar input {{ width: 100%; }}
       .calendar-day {{ min-height: 58px; padding: 5px; }}
       .candidate-head {{ grid-template-columns: 1fr auto; }}
       .pool {{ width: auto; height: 32px; padding: 0 10px; grid-column: 1 / -1; }}
@@ -2611,24 +2654,65 @@ def build_html(data: Dict[str, object]) -> str:
       return byDate;
     }}
 
-    function paperMonthlyCalendar(ledger) {{
+    const aShareClosedDates = new Set([
+      '2025-01-01',
+      '2025-01-28', '2025-01-29', '2025-01-30', '2025-01-31', '2025-02-03', '2025-02-04',
+      '2025-04-04',
+      '2025-05-01', '2025-05-02', '2025-05-05',
+      '2025-06-02',
+      '2025-10-01', '2025-10-02', '2025-10-03', '2025-10-06', '2025-10-07', '2025-10-08',
+      '2026-01-01', '2026-01-02',
+      '2026-02-16', '2026-02-17', '2026-02-18', '2026-02-19', '2026-02-20', '2026-02-23',
+      '2026-04-06',
+      '2026-05-01', '2026-05-04', '2026-05-05',
+      '2026-06-19',
+      '2026-09-25',
+      '2026-10-01', '2026-10-02', '2026-10-05', '2026-10-06', '2026-10-07'
+    ]);
+
+    function localIsoDate(now = new Date()) {{
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      return `${{year}}-${{month}}-${{day}}`;
+    }}
+
+    function defaultPaperMonth(ledger) {{
       const daily = paperDailyPnl(ledger);
       const dates = Array.from(daily.keys()).sort();
-      const month = (data.trade_date || dates[dates.length - 1] || new Date().toISOString().slice(0, 10)).slice(0, 7);
+      return (data.trade_date || dates[dates.length - 1] || localIsoDate()).slice(0, 7);
+    }}
+
+    function isAShareClosed(date) {{
+      const parsed = new Date(`${{date}}T00:00:00`);
+      const day = parsed.getDay();
+      return day === 0 || day === 6 || aShareClosedDates.has(date);
+    }}
+
+    function paperMonthlyCalendar(ledger, month = defaultPaperMonth(ledger)) {{
+      const daily = paperDailyPnl(ledger);
       const first = new Date(`${{month}}-01T00:00:00`);
       const daysInMonth = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
       const offset = (first.getDay() + 6) % 7;
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localIsoDate();
       const headers = ['一', '二', '三', '四', '五', '六', '日'].map(day => `<div class="calendar-head">${{day}}</div>`).join('');
       const blanks = Array.from({{ length: offset }}, () => '<div class="calendar-day empty"></div>').join('');
       const days = Array.from({{ length: daysInMonth }}, (_, index) => {{
         const day = index + 1;
         const date = `${{month}}-${{String(day).padStart(2, '0')}}`;
         const item = daily.get(date) || {{ pnl: 0, trades: 0 }};
+        const closed = isAShareClosed(date);
         const tone = item.pnl > 0 ? 'profit' : item.pnl < 0 ? 'loss' : '';
         const todayClass = date === today ? 'today' : '';
-        const amount = item.trades ? `<span class="${{pnlTone(item.pnl)}}-text">${{signedMoney(item.pnl)}}</span><em>${{item.trades}} 笔交易</em>` : '<em>无交易</em>';
-        return `<button class="calendar-day ${{tone}} ${{todayClass}}" type="button" data-calendar-date="${{date}}"><strong>${{day}}</strong>${{amount}}</button>`;
+        const closedClass = closed ? 'closed' : '';
+        let amount = '';
+        if (item.trades) {{
+          const note = closed ? `休市 · ${{item.trades}} 笔交易` : `${{item.trades}} 笔交易`;
+          amount = `<span class="${{pnlTone(item.pnl)}}-text">${{signedMoney(item.pnl)}}</span><em>${{note}}</em>`;
+        }} else {{
+          amount = `<em>${{closed ? '休市' : '无交易'}}</em>`;
+        }}
+        return `<button class="calendar-day ${{tone}} ${{todayClass}} ${{closedClass}}" type="button" data-calendar-date="${{date}}"><strong>${{day}}</strong>${{amount}}</button>`;
       }}).join('');
       return `<div class="calendar-grid">${{headers}}${{blanks}}${{days}}</div>`;
     }}
@@ -2678,7 +2762,14 @@ def build_html(data: Dict[str, object]) -> str:
         stock: document.getElementById('paperFilterStock'),
         action: document.getElementById('paperFilterAction'),
         result: document.getElementById('paperFilterResult'),
-        sort: document.getElementById('paperSort')
+        sort: document.getElementById('paperSort'),
+        calendarMonth: document.getElementById('paperCalendarMonth')
+      }};
+      const calendarBody = document.getElementById('paperCalendarBody');
+      const renderCalendar = () => {{
+        if (!calendarBody || !controls.calendarMonth) return;
+        calendarBody.innerHTML = paperMonthlyCalendar(ledger, controls.calendarMonth.value || defaultPaperMonth(ledger));
+        bindCalendarButtons();
       }};
       const render = () => {{
         const query = String(controls.stock.value || '').trim().toLowerCase();
@@ -2721,17 +2812,27 @@ def build_html(data: Dict[str, object]) -> str:
           `;
         }}).join('') : '<tr><td colspan="10">没有符合条件的交易记录。</td></tr>';
       }};
-      Object.values(controls).forEach(control => control.addEventListener('input', render));
-      Object.values(controls).forEach(control => control.addEventListener('change', render));
-      document.querySelectorAll('[data-calendar-date]').forEach(button => {{
-        button.addEventListener('click', () => {{
-          const date = button.dataset.calendarDate;
-          controls.from.value = date;
-          controls.to.value = date;
-          render();
-          document.getElementById('paperLedgerTableCard')?.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-        }});
+      Object.entries(controls).forEach(([key, control]) => {{
+        if (!control || key === 'calendarMonth') return;
+        control.addEventListener('input', render);
+        control.addEventListener('change', render);
       }});
+      if (controls.calendarMonth) {{
+        controls.calendarMonth.addEventListener('change', renderCalendar);
+        controls.calendarMonth.addEventListener('input', renderCalendar);
+      }}
+      function bindCalendarButtons() {{
+        document.querySelectorAll('[data-calendar-date]').forEach(button => {{
+          button.addEventListener('click', () => {{
+            const date = button.dataset.calendarDate;
+            controls.from.value = date;
+            controls.to.value = date;
+            render();
+            document.getElementById('paperLedgerTableCard')?.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+          }});
+        }});
+      }}
+      renderCalendar();
       render();
     }}
 
@@ -2806,7 +2907,11 @@ def build_html(data: Dict[str, object]) -> str:
           </div>
           <div class="detail-card">
             <h3>月度盈亏日历</h3>
-            ${{paperMonthlyCalendar(ledger)}}
+            <div class="calendar-toolbar">
+              <label>选择年月<input id="paperCalendarMonth" type="month" value="${{escapeHtml(defaultPaperMonth(ledger))}}"></label>
+              <span class="calendar-legend">灰色为 A 股休市日，日期保留。</span>
+            </div>
+            <div id="paperCalendarBody">${{paperMonthlyCalendar(ledger)}}</div>
           </div>
           <div class="detail-card" id="paperLedgerTableCard">
             <h3>交易记录</h3>

@@ -760,7 +760,7 @@ def build_html(data: Dict[str, object]) -> str:
     }}
     .board-tools {{
       display: grid;
-      grid-template-columns: minmax(260px, 1fr) minmax(320px, 1.2fr);
+      grid-template-columns: minmax(260px, 1fr);
       gap: 12px;
       padding: 14px 14px 0;
       align-items: start;
@@ -1461,10 +1461,6 @@ def build_html(data: Dict[str, object]) -> str:
               <span class="label">搜索</span>
               <input id="search" class="search" placeholder="搜索代码、名称、主题">
             </div>
-            <div class="tool-panel">
-              <span class="label">次日自动复盘</span>
-              <div class="review-panel" id="nextDayReview"></div>
-            </div>
           </div>
           <div class="cards" id="cards"></div>
           <div class="excluded" id="excluded"></div>
@@ -2138,26 +2134,6 @@ def build_html(data: Dict[str, object]) -> str:
       `).join('');
     }}
 
-    function renderNextDayReview() {{
-      const rows = data.next_day_review || [];
-      const box = document.getElementById('nextDayReview');
-      if (!rows.length) {{
-        box.innerHTML = '<div class="review-row"><span>暂无可复盘的上一交易日重点关注记录。系统会先保存今天候选池，下一交易日自动对照。</span></div>';
-        return;
-      }}
-      box.innerHTML = rows.slice(0, 5).map(row => {{
-        const result = row.review_result || '';
-        const weak = result.includes('止损') || result.includes('走弱') || result.includes('核对');
-        return `
-          <div class="review-row ${{weak ? 'weak' : ''}}">
-            <strong>${{escapeHtml(row.stock_code)}} ${{escapeHtml(row.stock_name)}}</strong>
-            <span>收益 ${{escapeHtml(row.return_from_buy_pct ?? '-')}}% · 最新 ${{escapeHtml(row.next_close || '-')}}</span>
-            <em>${{escapeHtml(result || '-')}}</em>
-          </div>
-        `;
-      }}).join('');
-    }}
-
     function renderPaperTrading() {{
       const snapshot = paperSnapshot();
       const perf = snapshot.perf || {{}};
@@ -2550,7 +2526,6 @@ def build_html(data: Dict[str, object]) -> str:
     renderMetrics();
     renderFunnel();
     // Theme filters, workflow notes, and rule config are intentionally hidden.
-    renderNextDayReview();
     renderPaperTrading();
     bindControls();
     renderCards();

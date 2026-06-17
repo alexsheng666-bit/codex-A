@@ -24,6 +24,20 @@ POOL_CAPS = dict(DEFAULT_POOL_CAPS)
 THEME_KEYWORDS = {theme: list(keywords) for theme, keywords in DEFAULT_THEME_KEYWORDS.items()}
 DEFENSE_MODE = dict(DEFAULT_DEFENSE_MODE)
 SEVERE_RISKS = {"接近涨停", "换手过热", "尾盘放量但收盘位置弱"}
+THEME_SIGNAL_PATH = ROOT / "work" / "theme_signals" / "theme_signals_latest.csv"
+THEME_SIGNAL_MAX_SCORE = 10.0
+SOURCE_RELIABILITY_SCORES = {
+    "official": 3.0,
+    "policy": 3.0,
+    "exchange": 3.0,
+    "company": 2.7,
+    "overseas_market": 2.4,
+    "market": 2.2,
+    "financial_media": 1.8,
+    "media": 1.5,
+    "self_media": 0.5,
+    "rumor": 0.0,
+}
 
 
 def yes(value: str) -> bool:
@@ -86,6 +100,138 @@ def add_reason(reasons: List[str], condition: bool, text: str) -> None:
 def add_risk(risks: List[str], condition: bool, text: str) -> None:
     if condition and text not in risks:
         risks.append(text)
+
+
+def split_signal_items(value: str) -> List[str]:
+    raw = str(value or "").replace("；", ";").replace("，", ",")
+    items: List[str] = []
+    for chunk in raw.split(";"):
+        items.extend(part.strip() for part in chunk.split(",") if part.strip())
+    return items
+
+
+def load_theme_signals(path: Path = THEME_SIGNAL_PATH) -> Dict[str, List[Dict[str, str]]]:
+    if not path.exists():
+        return {}
+    try:
+        with path.open(newline="", encoding="utf-8-sig") as file:
+            rows = [dict(row) for row in csv.DictReader(file)]
+    except OSError:
+        return {}
+
+    signals: Dict[str, List[Dict[str, str]]] = {}
+    for row in rows:
+        themes = split_signal_items(row.get("theme") or row.get("themes") or row.get("theme_tags"))
+        for theme in themes:
+            signals.setdefault(theme, []).append(row)
+    return signals
+
+
+def bounded_score(value: object, default: float = 0.0, cap: float = THEME_SIGNAL_MAX_SCORE) -> float:
+    try:
+        score = float(str(value).strip())
+    except (TypeError, ValueError):
+        score = default
+    return max(0.0, min(cap, score))
+
+
+def signal_freshness_score(signal: Dict[str, str], row: Dict[str, str]) -> float:
+    raw_date = (signal.get("signal_date") or signal.get("date") or signal.get("published_at") or "").strip()
+    trade_date = (row.get("trade_date") or "").strip()
+    if not raw_date or not trade_date:
+        return 0.5
+    try:
+        signal_day = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
+        trade_day = datetime.strptime(trade_date[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return 0.5
+    delta = (trade_day - signal_day).days
+    if delta == 0:
+        return 1.0
+    if delta == 1:
+        return 0.7
+    if 2 <= delta <= 3:
+        return 0.3
+    return 0.0
+
+
+def row_theme_relevance_score(signal: Dict[str, str], row: Dict[str, str], theme: str) -> float:
+    score = 1.2 if theme in split_signal_items(row.get("theme_tags")) or theme in detect_themes(row) else 0.8
+    keywords = split_signal_items(signal.get("keywords") or signal.get("related_keywords"))
+    if keywords:
+        text = " ".join(str(row.get(key, "")) for key in ("stock_name", "industry", "concepts", "theme_tags")).upper()
+        if any(keyword.upper() in text for keyword in keywords):
+            score += 0.8
+    else:
+        score += 0.4
+    return min(2.0, score)
+
+
+def market_confirmation_score(row: Dict[str, str]) -> float:
+    score = 0.0
+    if num(row, "theme_limit_up_count") >= 3 or num(row, "real_theme_limit_up_count") >= 3:
+        score += 1.0
+    if num(row, "theme_rank", 99) <= 3:
+        score += 0.7
+    if 1.2 <= num(row, "volume_ratio") <= 3:
+        score += 0.5
+    if yes(row.get("theme_tail_reflow")):
+        score += 0.5
+    if above_vwap_signal(row):
+        score += 0.3
+    return min(3.0, score)
+
+
+def signal_risk_penalty(signal: Dict[str, str], risks: List[str]) -> float:
+    explicit = signal.get("risk_penalty") or signal.get("negative_score")
+    if explicit not in (None, ""):
+        return bounded_score(explicit, cap=1.0)
+    risk_text = " ".join(str(signal.get(key, "")) for key in ("risk", "risk_tags", "note"))
+    penalty = 0.0
+    if any(word in risk_text for word in ("兑现", "高开低走", "炸板", "传闻", "辟谣", "弱关联")):
+        penalty += 0.7
+    if any(risk in SEVERE_RISKS for risk in risks):
+        penalty += 0.3
+    return min(1.0, penalty)
+
+
+def theme_signal_score(
+    row: Dict[str, str],
+    themes: List[str],
+    risks: List[str],
+    signals_by_theme: Dict[str, List[Dict[str, str]]],
+) -> Tuple[float, str]:
+    if not themes:
+        return 0.0, "未命中重点主题，不加消息辅助分"
+
+    preset = row.get("theme_signal_score") or row.get("news_signal_score")
+    if preset not in (None, ""):
+        score = bounded_score(preset)
+        detail = row.get("theme_signal_detail") or row.get("news_signal_detail") or "外部数据已给出消息辅助分"
+        return score, detail
+
+    best_score = 0.0
+    best_detail = "暂无已接入的可靠消息源，消息辅助分为0"
+    for theme in themes:
+        for signal in signals_by_theme.get(theme, []):
+            manual_score = signal.get("score") or signal.get("theme_signal_score")
+            if manual_score not in (None, ""):
+                score = bounded_score(manual_score)
+            else:
+                source_type = str(signal.get("source_type") or signal.get("source") or "").strip().lower()
+                reliability = bounded_score(signal.get("reliability_score"), default=SOURCE_RELIABILITY_SCORES.get(source_type, 1.0), cap=3.0)
+                relevance = bounded_score(signal.get("relevance_score"), default=row_theme_relevance_score(signal, row, theme), cap=2.0)
+                confirmation = bounded_score(signal.get("market_confirm_score"), default=market_confirmation_score(row), cap=3.0)
+                freshness = bounded_score(signal.get("freshness_score"), default=signal_freshness_score(signal, row), cap=1.0)
+                penalty = signal_risk_penalty(signal, risks)
+                score = max(0.0, reliability + relevance + confirmation + freshness - penalty)
+            score = min(THEME_SIGNAL_MAX_SCORE, score)
+            if score > best_score:
+                title = signal.get("title") or signal.get("event") or signal.get("source_name") or "主题信号"
+                best_score = score
+                best_detail = f"{theme}：{title}"
+
+    return round(best_score, 2), best_detail
 
 
 def match_strategies(row: Dict[str, str], themes: List[str]) -> Tuple[List[str], List[str], List[str]]:
@@ -577,6 +723,7 @@ def next_day_plan(pool: str, strategies: List[str]) -> Tuple[str, str, str]:
 
 def process_rows(rows: Iterable[Dict[str, str]]) -> List[Dict[str, str]]:
     output = []
+    signals_by_theme = load_theme_signals()
     for row in rows:
         row = dict(row)
         code = normalize_code(row.get("stock_code", ""))
@@ -584,10 +731,14 @@ def process_rows(rows: Iterable[Dict[str, str]]) -> List[Dict[str, str]]:
         eligible, universe, exclude_reason = detect_universe(row, code)
         themes = detect_themes(row) if eligible else []
         strategies, reasons, risks = match_strategies(row, themes) if eligible else ([], [], [])
-        score = candidate_score(themes, strategies, risks, row) if eligible else 0
+        base_score = candidate_score(themes, strategies, risks, row) if eligible else 0
         raw_pool = choose_pool(themes, strategies, risks, row) if eligible else ""
-        pool, defense_note = apply_defense_gate(raw_pool, score, risks) if eligible else ("", "")
+        pool, defense_note = apply_defense_gate(raw_pool, base_score, risks) if eligible else ("", "")
+        signal_score, signal_detail = theme_signal_score(row, themes, risks, signals_by_theme) if eligible else (0.0, "")
+        score = round(base_score + signal_score, 2) if eligible else 0
         score_reason_text = score_reasons(themes, strategies, risks, row) if eligible else ""
+        if eligible:
+            score_reason_text = f"{score_reason_text}；消息辅助：+{signal_score:g}/10，{signal_detail}"
         workflow = workflow_assessment(row, themes, strategies, risks, pool) if eligible else {
             "premarket_layer": "",
             "premarket_detail": "",
@@ -624,6 +775,9 @@ def process_rows(rows: Iterable[Dict[str, str]]) -> List[Dict[str, str]]:
                 "is_focus_theme": "是" if themes else "否",
                 "matched_strategies": ";".join(strategies),
                 "primary_strategy": strategies[0] if strategies else "",
+                "base_candidate_score": base_score,
+                "theme_signal_score": signal_score,
+                "theme_signal_detail": signal_detail,
                 "candidate_score": score,
                 "score_reasons": score_reason_text,
                 "pool_raw_level": raw_pool,
@@ -711,6 +865,7 @@ def write_report(path: Path, rows: List[Dict[str, str]], source: Path) -> None:
                     f"- **主题**：{markdown_tags(row.get('theme_tags', ''))}",
                     f"- **策略**：{markdown_tags(row.get('matched_strategies', ''))}",
                     f"- **涨跌幅 / 量比 / 换手**：{row.get('pct_change', '')}% / {row.get('volume_ratio', '')} / {row.get('turnover_rate', '')}%",
+                    f"- **评分**：总分 {row.get('candidate_score', '')} / 基础 {row.get('base_candidate_score', '')} / 消息辅助 +{row.get('theme_signal_score', '0')}/10（{row.get('theme_signal_detail', '')}）",
                     f"- **三层逻辑**：{row.get('workflow_summary', '') or '待补充'}",
                     f"- **规则点位**：买入 {row.get('buy_point', '') or '-'} / 第一止盈 {row.get('first_take_profit_point', '') or '-'} / 强势跟踪 {row.get('strong_follow_rule', '') or '-'} / 防守止损 {row.get('defensive_stop_point', '') or '-'}",
                     f"- **入选原因**：{row.get('entry_reasons', '') or '暂无'}",
@@ -785,7 +940,7 @@ def write_html_report(path: Path, rows: List[Dict[str, str]], source: Path) -> N
                   <div class="numbers">
                     <span>量比 <strong>{esc(row.get("volume_ratio"))}</strong></span>
                     <span>换手 <strong>{esc(row.get("turnover_rate"))}%</strong></span>
-                    <span>收盘位置 <strong>{esc(row.get("close_position_pct"))}%</strong></span>
+                    <span>消息 <strong>+{esc(row.get("theme_signal_score") or "0")}/10</strong></span>
                   </div>
                   <div class="block">
                     <span class="label">三层逻辑</span>

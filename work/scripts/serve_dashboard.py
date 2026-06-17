@@ -192,6 +192,30 @@ def refresh_dashboard() -> dict:
         },
         {
             "args": [
+                "work/scripts/update_theme_signals.py",
+                "--candidates",
+                "work/normalized_data/candidates_latest.csv",
+                "--output",
+                "work/theme_signals/theme_signals_latest.csv",
+            ],
+            "optional": True,
+            "timeout": 180,
+        },
+        {
+            "args": [
+                "work/scripts/screen_candidates.py",
+                "--input",
+                "01_原始资料/market_data/raw_csv/latest_market_data.csv",
+                "--output-csv",
+                "work/normalized_data/candidates_latest.csv",
+                "--report",
+                "work/reports/candidates_latest.md",
+                "--report-html",
+                "work/reports/candidates_latest.html",
+            ],
+        },
+        {
+            "args": [
                 "work/scripts/review_next_day.py",
                 "--candidates",
                 "work/normalized_data/candidates_latest.csv",

@@ -2842,7 +2842,8 @@ def build_html(data: Dict[str, object]) -> str:
               ` : ''}}
               <div class="tags">${{tagsHtml(row.theme_tags)}}${{tagsHtml(row.matched_strategies, 'tag strategy')}}</div>
               <div class="scoreline">
-                <span class="score-pill">评分 ${{escapeHtml(row.candidate_score || '-')}}</span>
+                <span class="score-pill" title="基础分 ${{escapeHtml(row.base_candidate_score || row.candidate_score || '-')}}，消息辅助最高 +10">评分 ${{escapeHtml(row.candidate_score || '-')}}</span>
+                <span class="score-pill" title="${{escapeHtml(row.theme_signal_detail || '暂无消息辅助信号')}}">消息 +${{escapeHtml(row.theme_signal_score || '0')}}/10</span>
                 <span class="score-pill">池内排名 #${{escapeHtml(row.pool_rank || '-')}}</span>
                 <span class="score-pill">原始池 ${{escapeHtml(poolLabel[row.pool_raw_level] || row.pool_raw_level || '-')}}</span>
               </div>

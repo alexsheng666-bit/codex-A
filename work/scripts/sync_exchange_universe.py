@@ -20,7 +20,7 @@ UNIVERSE_CACHE = ROOT / "work" / "cache" / "stock_universe.csv"
 INCLUDE_PREFIXES = ("600", "601", "603", "605", "000", "001", "002", "003")
 EXCLUDE_PREFIXES = ("300", "301", "688", "8", "4", "9")
 COVERAGE_BASIC_ROWS = 1500
-COVERAGE_FULL_ROWS = 2500
+COVERAGE_FULL_ROWS = 3000
 EASTMONEY_HOSTS = [
     "push2.eastmoney.com",
     "82.push2.eastmoney.com",

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INPUT_DIR = ROOT / "01_原始资料" / "market_data" / "manual_exports"
 UNIVERSE_CACHE = ROOT / "work" / "cache" / "stock_universe.csv"
 COVERAGE_BASIC_ROWS = 1500
-COVERAGE_FULL_ROWS = 2500
+COVERAGE_FULL_ROWS = 3000
 
 INCLUDE_PREFIXES = ("600", "601", "603", "605", "000", "001", "002", "003")
 EXCLUDE_PREFIXES = ("300", "301", "688", "8", "4", "9")

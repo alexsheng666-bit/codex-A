@@ -36,7 +36,7 @@ HOSTS = [
 INCLUDE_PREFIXES = ("600", "601", "603", "605", "000", "001", "002", "003")
 EXCLUDE_PREFIXES = ("300", "301", "688", "8", "4", "9")
 FIELDS = "f12,f14,f13,f3,f2,f4,f5,f6,f7,f8,f10,f15,f16,f17,f18,f20,f21,f100,f124"
-MIN_FULL_SOURCE_ROWS = 800
+MIN_FULL_SOURCE_ROWS = 3000
 MIN_EASTMONEY_ROWS = MIN_FULL_SOURCE_ROWS
 MIN_UNIVERSE_FALLBACK_ROWS = 80
 SINA_BATCH_SIZE = 80
@@ -277,7 +277,7 @@ def fetch_ths_page(page: int) -> List[Dict[str, object]]:
     return table.to_dict("records")
 
 
-def fetch_ths_all(max_pages: int = 80, min_rows: int = 800) -> List[Dict[str, object]]:
+def fetch_ths_all(max_pages: int = 80, min_rows: int = MIN_FULL_SOURCE_ROWS) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
     for page in range(1, max_pages + 1):
         try:

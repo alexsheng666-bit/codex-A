@@ -21,7 +21,7 @@ UNIVERSE_CACHE = ROOT / "work" / "cache" / "stock_universe.csv"
 MANUAL_EXPORTS = ROOT / "01_原始资料" / "market_data" / "manual_exports"
 DASHBOARD = ROOT / "dashboard" / "index.html"
 COVERAGE_BASIC_ROWS = 1500
-COVERAGE_FULL_ROWS = 2500
+COVERAGE_FULL_ROWS = 3000
 
 SOURCE_LABELS = {
     "ths_q_hs_snapshot": "同花顺行情列表",

@@ -27,7 +27,7 @@ PAPER_LEDGER = ROOT / "work" / "paper_trading" / "trade_ledger.csv"
 LATEST_MARKET = ROOT / "01_原始资料" / "market_data" / "raw_csv" / "latest_market_data.csv"
 CLOUD_REFRESH_ENDPOINT = ROOT / "work" / "cloud" / "refresh_endpoint.txt"
 COVERAGE_BASIC_ROWS = 1500
-COVERAGE_FULL_ROWS = 2500
+COVERAGE_FULL_ROWS = 3000
 
 
 def esc(value: object) -> str:

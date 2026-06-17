@@ -1,0 +1,8 @@
+name = "codex-a-refresh"
+main = "work/cloud/github_pages_refresh_worker.js"
+compatibility_date = "2026-06-17"
+
+[vars]
+GITHUB_OWNER = "alexsheng666-bit"
+GITHUB_REPO = "codex-A"
+ALLOWED_ORIGIN = "https://alexsheng666-bit.github.io"

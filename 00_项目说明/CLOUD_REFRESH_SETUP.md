@@ -22,14 +22,14 @@ Worker 代码：
 这个 Worker 同时负责两件事：
 
 - `POST /`：触发 GitHub Actions 云端刷新看板。
-- `GET /quotes?codes=600601,002185`：给固定链接页面提供重点关注股票实时价，用于 15 秒价格刷新和止盈止损提醒。
+- `GET /quotes?codes=600601,002185`：给固定链接页面提供重点关注股票实时价，用于 5 秒价格刷新和止盈止损提醒。
 
-如果本地更新了 `work/cloud/github_pages_refresh_worker.js`，需要回到 Cloudflare Worker 的 `Edit code` 重新粘贴并 `Deploy`，线上实时价功能才会同步生效。
+如果本地更新了 `work/cloud/github_pages_refresh_worker.js`，需要重新部署 Cloudflare Worker，线上实时价功能才会同步生效。可以双击 `10_部署Cloudflare Worker.command` 通过 Wrangler 部署；如果本机没有 Wrangler 登录环境，也可以回到 Cloudflare Worker 的 `Edit code` 手动粘贴并 `Deploy`。
 
 一次性配置步骤：
 
 1. 打开 Cloudflare，进入 Workers & Pages，新建 Worker。
-2. 把 `work/cloud/github_pages_refresh_worker.js` 里的全部代码复制进去并部署。
+2. 把 `work/cloud/github_pages_refresh_worker.js` 里的全部代码复制进去并部署；或在本机已登录 Wrangler 后双击 `10_部署Cloudflare Worker.command`。
 3. 在 Worker 设置里添加下面 4 个变量。
 4. 复制 Worker 的公开访问地址，通常类似：
    `https://codex-a-refresh.xxxxx.workers.dev`

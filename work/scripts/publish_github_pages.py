@@ -49,6 +49,8 @@ CLOUD_SOURCE_PATHS = [
     "work/scripts/status_check.py",
     "work/scripts/sync_exchange_universe.py",
     "work/scripts/update_paper_trading.py",
+    "wrangler.toml",
+    "10_部署Cloudflare Worker.command",
     ".github/workflows/cloud-refresh-dashboard.yml",
 ]
 WORKFLOW_PATHS = {".github/workflows/cloud-refresh-dashboard.yml"}

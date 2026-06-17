@@ -96,9 +96,7 @@ def can_buy_tail(trade_date: str, now: datetime) -> bool:
         parsed = parse_date(trade_date)
     except ValueError:
         return False
-    if parsed < now.date():
-        return True
-    if parsed > now.date():
+    if parsed != now.date():
         return False
     return now.time() >= BUY_AFTER
 
@@ -253,10 +251,6 @@ def bought_today(ledger: List[Dict[str, object]], trade_date: str) -> bool:
     return any(row.get("trade_date") == trade_date and row.get("action") == "BUY" for row in ledger)
 
 
-def sold_today(ledger: List[Dict[str, object]], trade_date: str) -> bool:
-    return any(row.get("trade_date") == trade_date and row.get("action") == "SELL" for row in ledger)
-
-
 def buy_today_a_pool(
     state: Dict[str, object],
     ledger: List[Dict[str, object]],
@@ -264,8 +258,6 @@ def buy_today_a_pool(
     trade_date: str,
 ) -> None:
     if bought_today(ledger, trade_date):
-        return
-    if sold_today(ledger, trade_date):
         return
     if state.get("positions"):
         return
@@ -453,7 +445,7 @@ def main() -> None:
         before_buys = len([row for row in ledger if row.get("action") == "BUY"])
         buy_today_a_pool(state, ledger, candidates, trade_date)
         after_buys = len([row for row in ledger if row.get("action") == "BUY"])
-        note = "已按重点关注平均模拟建仓" if after_buys > before_buys else "当日已建仓、已卖出或暂无重点关注，不重复买入"
+        note = "已按重点关注平均模拟建仓" if after_buys > before_buys else "当日已建仓或暂无重点关注，不重复买入"
     mark_to_market(state, quotes)
     write_outputs(state, ledger, trade_date, note)
     save_state(state)

@@ -445,8 +445,8 @@ def market_for(code: str) -> str:
     return "SZ"
 
 
-def theme_tags(name: str, industry: str) -> List[str]:
-    text = f"{name} {industry}".upper()
+def theme_tags(_name: str, industry_or_concepts: str) -> List[str]:
+    text = str(industry_or_concepts or "").upper()
     tags = []
     for theme, keywords in THEME_KEYWORDS.items():
         if any(keyword.upper() in text for keyword in keywords):
@@ -763,7 +763,7 @@ def convert_sina_values(
         industry, concepts = meta.get(code, ("", ""))
         turnover_rate = 3.8 if amount >= 1_000_000_000 else 2.0 if amount >= 300_000_000 else 0.8
         volume_ratio = 1.8 if amount >= 1_000_000_000 and pct_change > 2 else 1.35 if pct_change > 1 else 1.0
-        tags = theme_tags(name, f"{industry};{concepts}") or [industry]
+        tags = theme_tags(name, f"{industry};{concepts}")
         limit_up = pct_change >= 9.7
         ma5 = round(close * 0.985, 2)
         ma10 = round(close * 0.97, 2)

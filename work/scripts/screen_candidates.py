@@ -80,11 +80,15 @@ def detect_universe(row: Dict[str, str], code: str) -> Tuple[bool, str, str]:
     return False, "", "not_main_board_universe"
 
 
+TRUSTED_THEME_FIELDS = ("industry", "concepts", "theme_tags")
+
+
+def trusted_theme_text(row: Dict[str, str]) -> str:
+    return " ".join(str(row.get(key, "")) for key in TRUSTED_THEME_FIELDS).upper()
+
+
 def detect_themes(row: Dict[str, str]) -> List[str]:
-    text = " ".join(
-        str(row.get(key, ""))
-        for key in ("stock_name", "industry", "concepts", "theme_tags")
-    ).upper()
+    text = trusted_theme_text(row)
     matched = []
     for theme, keywords in THEME_KEYWORDS.items():
         if any(keyword.upper() in text for keyword in keywords):
@@ -159,7 +163,7 @@ def row_theme_relevance_score(signal: Dict[str, str], row: Dict[str, str], theme
     score = 1.2 if theme in split_signal_items(row.get("theme_tags")) or theme in detect_themes(row) else 0.8
     keywords = split_signal_items(signal.get("keywords") or signal.get("related_keywords"))
     if keywords:
-        text = " ".join(str(row.get(key, "")) for key in ("stock_name", "industry", "concepts", "theme_tags")).upper()
+        text = trusted_theme_text(row)
         if any(keyword.upper() in text for keyword in keywords):
             score += 0.8
     else:

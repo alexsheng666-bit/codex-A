@@ -233,5 +233,11 @@
     "exit_reason",
     "mistake_tag",
     "review_note"
-  ]
+  ],
+  "data_labeling_policy": {
+    "forbid_name_or_code_guessing": true,
+    "trusted_theme_fields": ["industry", "concepts", "theme_tags"],
+    "forbidden_inference_fields": ["stock_name", "stock_code", "stock_short_name"],
+    "industry_rule": "新增或修正行业标签前，必须先联网核对最新主营业务构成，并按实际主营业务匹配申万一级行业；资料不足则留空等待人工核对。"
+  }
 }

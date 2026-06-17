@@ -8,7 +8,7 @@ import csv
 import html
 import json
 from collections import Counter
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -28,6 +28,7 @@ LATEST_MARKET = ROOT / "01_原始资料" / "market_data" / "raw_csv" / "latest_m
 CLOUD_REFRESH_ENDPOINT = ROOT / "work" / "cloud" / "refresh_endpoint.txt"
 COVERAGE_BASIC_ROWS = 1500
 COVERAGE_FULL_ROWS = 3000
+REFRESH_TIMES = ["09:32", "10:30", "11:25", "13:30", "14:15", "14:35", "14:45", "14:52", "14:57", "15:10", "16:10"]
 
 
 def esc(value: object) -> str:
@@ -231,6 +232,37 @@ def market_state(candidates: List[Dict[str, str]]) -> str:
     return "谨慎"
 
 
+def recommendation_phase(now: Optional[datetime] = None) -> Dict[str, object]:
+    current = (now or datetime.now()).time()
+    phases = [
+        (time(9, 32), "盘前等待", "等待开盘后第一轮数据，不生成买入建议。", False),
+        (time(11, 25), "早盘观察", "识别高开、低开、题材强弱和开盘冲高回落，不建议买入。", False),
+        (time(13, 30), "午盘快照", "记录早盘最终强弱，午后继续观察主线是否延续。", False),
+        (time(14, 15), "午后观察", "观察午后资金回流和主题延续，不建议直接执行。", False),
+        (time(14, 35), "午后预选", "开始锁定候选范围，买入、止盈、止损点位仅作预估。", False),
+        (time(14, 45), "尾盘候选", "开始给出尾盘候选和初步执行点位，继续剔除急拉诱多。", False),
+        (time(14, 52), "候选收窄", "收窄候选，重点核对量能、收盘位置和风险标签。", False),
+        (time(14, 57), "准推荐", "最终确认前版本，用于人工准备和模拟盘候选等待。", False),
+        (time(15, 0), "最终推荐", "15:00 前最终推荐窗口，模拟盘仅在 14:57 后按最终名单执行。", True),
+        (time(15, 10), "收盘复盘", "不再生成买入建议，记录收盘后复盘快照。", False),
+        (time(23, 59, 59), "盘后复盘", "稳定收盘数据复盘，用于次日计划。", False),
+    ]
+    for end_time, label, note, executable in phases:
+        if current < end_time:
+            return {
+                "label": label,
+                "note": note,
+                "allows_buy": executable,
+                "refresh_times": REFRESH_TIMES,
+            }
+    return {
+        "label": "盘后复盘",
+        "note": "稳定收盘数据复盘，用于次日计划。",
+        "allows_buy": False,
+        "refresh_times": REFRESH_TIMES,
+    }
+
+
 def to_dashboard_data(rows: List[Dict[str, str]], source: Path) -> Dict[str, object]:
     candidates = candidate_rows(rows)
     excluded = excluded_rows(rows)
@@ -253,6 +285,7 @@ def to_dashboard_data(rows: List[Dict[str, str]], source: Path) -> Dict[str, obj
         "trade_date": trade_date,
         **freshness,
         "market_state": market_state(candidates),
+        "recommendation_phase": recommendation_phase(),
         "summary": {
             "total_rows": len(rows),
             "eligible": sum(1 for row in rows if row.get("universe_eligible") == "是"),
@@ -1698,6 +1731,7 @@ def build_html(data: Dict[str, object]) -> str:
       {{ label: '重点关注', value: data.summary.a_pool, tone: 'a', pool: 'A' }},
       {{ label: '观察候补', value: data.summary.b_pool, tone: 'b', pool: 'B' }},
       {{ label: '题材异动记录', value: data.summary.c_pool, tone: 'c', pool: 'C' }},
+      {{ label: '推荐阶段', value: data.recommendation_phase?.label || '-' }},
       {{ label: '股票池缓存', value: data.summary.universe_cache }},
       {{ label: '覆盖状态', value: data.summary.coverage_status }},
       {{ label: '已剔除', value: data.summary.excluded }}
@@ -2270,7 +2304,8 @@ def build_html(data: Dict[str, object]) -> str:
     function renderMetrics() {{
       const sourceDetail = (data.source_counts || []).map(([name, count]) => `${{name}} ${{count}}`).join('，');
       document.getElementById('subtitle').textContent = `生成时间：${{data.generated_at}} · 来源：${{sourceDetail || data.primary_source || '-'}}`;
-      document.getElementById('marketState').textContent = `市场状态：${{data.market_state}}`;
+      const phase = data.recommendation_phase || {{}};
+      document.getElementById('marketState').textContent = `市场状态：${{data.market_state}} · ${{phase.label || '-'}}：${{phase.note || '-'}}`;
       document.getElementById('metrics').innerHTML = metricItems.map(item => `
         <div class="metric ${{item.tone || ''}} ${{item.pool ? 'clickable' : ''}} ${{item.pool && state.pool === item.pool ? 'active-filter' : ''}} ${{String(item.value ?? '').length >= 6 ? 'long' : ''}} ${{String(item.value ?? '').length >= 10 ? 'small' : ''}}" ${{item.pool ? `data-metric-pool="${{item.pool}}" role="button" tabindex="0" aria-label="查看${{escapeHtml(item.label)}}列表"` : ''}}>
           ${{item.pool ? `<button class="note-corner" type="button" data-note-pool="${{item.pool}}" aria-label="${{escapeHtml(item.label)}}说明"></button><div class="note-popup">${{escapeHtml(poolNotes[item.pool])}}</div>` : ''}}

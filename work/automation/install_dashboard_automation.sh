@@ -22,7 +22,7 @@ launchctl load "$LAUNCH_AGENTS/$REFRESH_LABEL.plist"
 
 echo "自动运行已启用。"
 echo "- 不再启动本地看板服务"
-echo "- 周一至周五按交易节奏自动刷新并尝试发布：9:32、10:30、11:35、13:30、14:30、14:45、14:52、14:57、15:10、16:10"
+echo "- 周一至周五按交易节奏自动刷新并尝试发布：9:32、10:30、11:25、13:30、14:15、14:35、14:45、14:52、14:57、15:10、16:10"
 echo
 echo "固定 Pages 链接：https://alexsheng666-bit.github.io/codex-A/outputs/stock_report.html"
 echo

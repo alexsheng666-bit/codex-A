@@ -26,6 +26,7 @@ PAPER_POSITIONS = ROOT / "work" / "paper_trading" / "positions_latest.csv"
 PAPER_LEDGER = ROOT / "work" / "paper_trading" / "trade_ledger.csv"
 LATEST_MARKET = ROOT / "01_原始资料" / "market_data" / "raw_csv" / "latest_market_data.csv"
 CLOUD_REFRESH_ENDPOINT = ROOT / "work" / "cloud" / "refresh_endpoint.txt"
+QUOTE_ENDPOINTS = ROOT / "work" / "cloud" / "quote_endpoints.txt"
 COVERAGE_BASIC_ROWS = 1500
 COVERAGE_FULL_ROWS = 3000
 REFRESH_TIMES = ["09:32", "10:30", "11:25", "13:30", "14:15", "14:35", "14:45", "14:52", "14:57", "15:10", "16:10"]
@@ -73,6 +74,29 @@ def read_optional_text(path: Path) -> str:
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8").strip()
+
+
+def read_optional_lines(path: Path) -> List[str]:
+    if not path.exists():
+        return []
+    lines = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def quote_endpoint_config() -> List[str]:
+    endpoints = []
+    for endpoint in read_optional_lines(QUOTE_ENDPOINTS):
+        normalized = endpoint.rstrip("/")
+        if normalized and normalized not in endpoints:
+            endpoints.append(normalized)
+    fallback = read_optional_text(CLOUD_REFRESH_ENDPOINT).rstrip("/")
+    if fallback and fallback not in endpoints:
+        endpoints.append(fallback)
+    return endpoints
 
 
 def market_quotes(path: Path = LATEST_MARKET) -> Dict[str, Dict[str, str]]:
@@ -303,6 +327,7 @@ def to_dashboard_data(rows: List[Dict[str, str]], source: Path) -> Dict[str, obj
         "theme_counts": themes.most_common(),
         "config": config,
         "cloud_refresh_endpoint": read_optional_text(CLOUD_REFRESH_ENDPOINT),
+        "quote_endpoints": quote_endpoint_config(),
         "candidates": candidates,
         "excluded": excluded,
         "next_day_review": read_optional_csv(NEXT_DAY_REVIEW),
@@ -1714,6 +1739,8 @@ def build_html(data: Dict[str, object]) -> str:
     const liveState = {{
       quotes: {{}},
       lastUpdated: '',
+      quoteEndpoint: '',
+      quoteSource: '',
       soundEnabled: false,
       alerted: new Set(),
       paper: null,
@@ -1844,10 +1871,33 @@ def build_html(data: Dict[str, object]) -> str:
       return '';
     }}
 
-    function quoteEndpoint() {{
-      const endpoint = String(data.cloud_refresh_endpoint || '').trim();
+    function quoteEndpoints() {{
+      const configured = Array.isArray(data.quote_endpoints) ? data.quote_endpoints : [];
+      const fallback = data.cloud_refresh_endpoint ? [data.cloud_refresh_endpoint] : [];
+      const seen = new Set();
+      return configured.concat(fallback)
+        .map(endpoint => String(endpoint || '').trim().replace(/\/$/, ''))
+        .filter(endpoint => {{
+          if (!endpoint || seen.has(endpoint)) return false;
+          seen.add(endpoint);
+          return true;
+        }});
+    }}
+
+    function quoteUrl(endpoint) {{
+      return `${{endpoint.replace(/\/$/, '')}}/quotes`;
+    }}
+
+    function quoteSourceLabel(endpoint) {{
       if (!endpoint) return '';
-      return `${{endpoint.replace(/\\/$/, '')}}/quotes`;
+      try {{
+        const host = new URL(endpoint).hostname;
+        if (host.includes('alexsheng666.com')) return '专属域名行情';
+        if (host.includes('workers.dev')) return 'Worker行情通道';
+        return host;
+      }} catch (error) {{
+        return '行情通道';
+      }}
     }}
 
     function strongUpsideCandidate(row, price) {{
@@ -2071,7 +2121,8 @@ def build_html(data: Dict[str, object]) -> str:
         box.innerHTML = '';
         return;
       }}
-      const endpointReady = Boolean(quoteEndpoint());
+      const endpointReady = quoteEndpoints().length > 0;
+      const sourceText = liveState.quoteSource ? ` · ${{liveState.quoteSource}}` : '';
       box.classList.add('show');
       const cards = rows.map(row => {{
         const price = numberValue(row.price);
@@ -2103,7 +2154,7 @@ def build_html(data: Dict[str, object]) -> str:
           <div class="focus-realtime-meta">
             <button class="sound-toggle ${{liveState.soundEnabled ? 'active' : ''}}" type="button" id="soundToggle">${{liveState.soundEnabled ? '声音已开' : '开启声音'}}</button>
             <button class="sound-toggle" type="button" id="alertHistoryButton">提醒记录</button>
-            <span>${{endpointReady ? `每 5 秒刷新 · ${{liveState.lastUpdated || '准备中'}}` : '实时刷新待 Worker 更新'}}</span>
+            <span>${{endpointReady ? `每 5 秒刷新 · ${{liveState.lastUpdated || '准备中'}}${{sourceText}}` : '实时刷新待 Worker 更新'}}</span>
           </div>
         </div>
         <div class="focus-price-grid">${{cards}}</div>
@@ -2265,25 +2316,37 @@ def build_html(data: Dict[str, object]) -> str:
     }}
 
     async function fetchFocusQuotes() {{
-      const endpoint = quoteEndpoint();
+      const endpoints = quoteEndpoints();
       const codesToFetch = quoteCodes();
-      if (!endpoint || !codesToFetch.length) {{
+      if (!endpoints.length || !codesToFetch.length) {{
         renderFocusRealtime();
         renderRiskAlerts();
         updateCardLivePrices();
         renderPaperTrading();
         return;
       }}
-      try {{
-        const codes = codesToFetch.join(',');
-        const response = await fetch(`${{endpoint}}?codes=${{encodeURIComponent(codes)}}`, {{ method: 'GET' }});
-        const result = await response.json();
-        if (!response.ok || !result.ok) throw new Error(result.message || '实时行情获取失败');
-        liveState.quotes = result.quotes || {{}};
-        liveState.lastUpdated = new Date().toLocaleTimeString('zh-CN', {{ hour12: false }});
-        updatePaperRuntimeFromQuotes();
-      }} catch (error) {{
+      const codes = codesToFetch.join(',');
+      let lastError = null;
+      for (const baseEndpoint of endpoints) {{
+        try {{
+          const endpoint = quoteUrl(baseEndpoint);
+          const response = await fetch(`${{endpoint}}?codes=${{encodeURIComponent(codes)}}&_=${{Date.now()}}`, {{ method: 'GET', cache: 'no-store' }});
+          const result = await response.json();
+          if (!response.ok || !result.ok) throw new Error(result.message || '实时行情获取失败');
+          liveState.quotes = result.quotes || {{}};
+          liveState.lastUpdated = new Date().toLocaleTimeString('zh-CN', {{ hour12: false }});
+          liveState.quoteEndpoint = baseEndpoint;
+          liveState.quoteSource = quoteSourceLabel(baseEndpoint);
+          updatePaperRuntimeFromQuotes();
+          lastError = null;
+          break;
+        }} catch (error) {{
+          lastError = error;
+        }}
+      }}
+      if (lastError) {{
         liveState.lastUpdated = '实时刷新失败';
+        liveState.quoteSource = '全部行情通道失败';
       }}
       renderFocusRealtime();
       renderRiskAlerts();

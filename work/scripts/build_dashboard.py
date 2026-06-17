@@ -517,6 +517,10 @@ def build_html(data: Dict[str, object]) -> str:
       border-color: #efc8c8;
       background: #fff7f7;
     }}
+    .focus-price-card.strong {{
+      border-color: #e5c486;
+      background: #fffaf0;
+    }}
     .focus-price-card strong {{
       display: block;
       font-size: 13px;
@@ -545,6 +549,30 @@ def build_html(data: Dict[str, object]) -> str:
       color: var(--muted);
       font-size: 11px;
       line-height: 1.35;
+    }}
+    .position-badges {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-bottom: 5px;
+    }}
+    .position-badge {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      border: 1px solid #c9d6e4;
+      border-radius: 999px;
+      background: #eef5fc;
+      color: #163e62;
+      padding: 0 7px;
+      font-size: 11px;
+      font-weight: 800;
+      line-height: 1;
+    }}
+    .position-badge.strong {{
+      border-color: #e5c486;
+      background: #fff4d6;
+      color: #7a4a05;
     }}
     .funnel {{
       display: grid;
@@ -1799,38 +1827,98 @@ def build_html(data: Dict[str, object]) -> str:
       return score >= 120 && themeLimitUps >= 3 && closePosition >= 97 && volumeRatio >= 1.2 && cleanRisk;
     }}
 
+    function candidateByCode(code) {{
+      return data.candidates.find(row => row.stock_code === code) || {{}};
+    }}
+
+    function dynamicStopPoint(entry, price, baseStop) {{
+      if (!entry || !price) return baseStop;
+      const profitPct = (price - entry) / entry * 100;
+      let stop = baseStop || entry * 0.98;
+      if (profitPct >= 8) stop = Math.max(stop, price * 0.965, entry * 1.03);
+      else if (profitPct >= 5) stop = Math.max(stop, price * 0.97, entry * 1.015);
+      else if (profitPct >= 2) stop = Math.max(stop, entry * 1.002);
+      return Number(stop.toFixed(2));
+    }}
+
+    function paperRiskRows() {{
+      const snapshot = paperSnapshot();
+      return (snapshot.positions || []).map(position => {{
+        const quote = liveState.quotes[position.stock_code] || {{}};
+        const candidate = candidateByCode(position.stock_code);
+        const entry = numberValue(position.entry_price);
+        const price = numberValue(quote.price || position.current_price || entry);
+        const take = numberValue(position.first_take_profit_point || candidate.first_take_profit_point || candidate.sell_point || (entry ? entry * 1.02 : 0));
+        const baseStop = numberValue(position.defensive_stop_point || candidate.defensive_stop_point || candidate.stop_point || (entry ? entry * 0.98 : 0));
+        const dynamicStop = dynamicStopPoint(entry, price, baseStop);
+        const profitPct = entry ? Number(((price - entry) / entry * 100).toFixed(2)) : 0;
+        const dailyPct = numberValue(quote.pct_change);
+        const firstTakeDone = position.first_take_done === true || position.first_take_done === 'true' || position.first_take_done === 'True' || position.first_take_done === '是';
+        const strong = Boolean(price && take && price >= take && (firstTakeDone || profitPct >= 3 || dailyPct >= 5 || strongUpsideCandidate(candidate, price)));
+        let status = '持仓观察';
+        if (price && baseStop && price <= baseStop) status = '触发防守止损';
+        else if (price && dynamicStop && price <= dynamicStop && profitPct > 0) status = '触发动态止损观察';
+        else if (price && take && price >= take && !firstTakeDone) status = '到达第一止盈';
+        else if (strong) status = '强势跟踪';
+        return {{
+          ...position,
+          candidate,
+          quote,
+          entry,
+          price,
+          take: take ? Number(take.toFixed(2)) : 0,
+          baseStop: baseStop ? Number(baseStop.toFixed(2)) : 0,
+          dynamicStop,
+          profitPct,
+          dailyPct,
+          firstTakeDone,
+          strong,
+          status
+        }};
+      }});
+    }}
+
     function realtimeAlerts() {{
       const alerts = [];
-      focusRows().forEach(row => {{
-        const price = displayPrice(row);
-        const take = numberValue(row.first_take_profit_point || row.sell_point);
-        const stop = numberValue(row.defensive_stop_point || row.stop_point);
+      paperRiskRows().forEach(row => {{
+        const price = numberValue(row.price);
+        const take = numberValue(row.take);
+        const stop = numberValue(row.baseStop);
+        const dynamicStop = numberValue(row.dynamicStop);
         if (!price) return;
-        if (take && price >= take) {{
-          alerts.push({{
-            type: 'take',
-            code: row.stock_code,
-            name: row.stock_name,
-            title: `${{row.stock_code}} ${{row.stock_name}} 到达第一止盈`,
-            detail: `实时价 ${{price.toFixed(2)}} ≥ 止盈 ${{take.toFixed(2)}}。按纪律可先落袋一部分。`,
-          }});
-          if (strongUpsideCandidate(row, price)) {{
-            alerts.push({{
-              type: 'extra',
-              code: row.stock_code,
-              name: row.stock_name,
-              title: `${{row.stock_code}} ${{row.stock_name}} 止盈已到但强度仍高`,
-              detail: '主题强度、评分、收盘位置和量能仍满足强势跟踪条件，可考虑保留小仓按分时均价线跟踪。',
-            }});
-          }}
-        }}
         if (stop && price <= stop) {{
           alerts.push({{
             type: 'stop',
             code: row.stock_code,
             name: row.stock_name,
             title: `${{row.stock_code}} ${{row.stock_name}} 触发防守止损`,
-            detail: `实时价 ${{price.toFixed(2)}} ≤ 止损 ${{stop.toFixed(2)}}。短线纪律优先，避免短线变长线。`,
+            detail: `实时价 ${{price.toFixed(2)}} ≤ 防守止损 ${{stop.toFixed(2)}}。模拟盘持仓优先按纪律处理。`,
+          }});
+        }} else if (dynamicStop && price <= dynamicStop && numberValue(row.profitPct) > 0) {{
+          alerts.push({{
+            type: 'stop',
+            code: row.stock_code,
+            name: row.stock_name,
+            title: `${{row.stock_code}} ${{row.stock_name}} 触发动态止损观察`,
+            detail: `实时价 ${{price.toFixed(2)}} ≤ 动态止损 ${{dynamicStop.toFixed(2)}}。已有浮盈回落，建议按移动保护位复核。`,
+          }});
+        }}
+        if (take && price >= take && !row.firstTakeDone) {{
+          alerts.push({{
+            type: 'take',
+            code: row.stock_code,
+            name: row.stock_name,
+            title: `${{row.stock_code}} ${{row.stock_name}} 到达第一止盈`,
+            detail: `实时价 ${{price.toFixed(2)}} ≥ 第一止盈 ${{take.toFixed(2)}}。仅针对模拟盘持仓提示，可按纪律先落袋一部分。`,
+          }});
+        }}
+        if (row.strong) {{
+          alerts.push({{
+            type: 'extra',
+            code: row.stock_code,
+            name: row.stock_name,
+            title: `${{row.stock_code}} ${{row.stock_name}} 强势跟踪标记`,
+            detail: `实时价 ${{price.toFixed(2)}}，浮盈 ${{pct(row.profitPct)}}。涨势较强，可保留强势跟踪标记，并参考动态止损 ${{dynamicStop ? dynamicStop.toFixed(2) : '-'}}。`,
           }});
         }}
       }});
@@ -1942,7 +2030,7 @@ def build_html(data: Dict[str, object]) -> str:
     }}
 
     function renderFocusRealtime() {{
-      const rows = focusRows();
+      const rows = paperRiskRows();
       const box = document.getElementById('focusRealtime');
       if (!rows.length) {{
         box.classList.remove('show');
@@ -1952,24 +2040,32 @@ def build_html(data: Dict[str, object]) -> str:
       const endpointReady = Boolean(quoteEndpoint());
       box.classList.add('show');
       const cards = rows.map(row => {{
-        const price = displayPrice(row);
-        const take = numberValue(row.first_take_profit_point || row.sell_point);
-        const stop = numberValue(row.defensive_stop_point || row.stop_point);
-        const quote = liveState.quotes[row.stock_code] || {{}};
-        const triggered = (take && price >= take) || (stop && price <= stop);
-        const tone = priceTone(row);
+        const price = numberValue(row.price);
+        const take = numberValue(row.take);
+        const stop = numberValue(row.baseStop);
+        const dynamicStop = numberValue(row.dynamicStop);
+        const quote = row.quote || {{}};
+        const triggered = row.status.includes('触发') || row.status.includes('到达');
+        const tone = price > numberValue(row.entry) ? 'up' : price < numberValue(row.entry) ? 'down' : '';
+        const badges = [
+          '<span class="position-badge">模拟持仓</span>',
+          row.strong ? '<span class="position-badge strong">强势跟踪</span>' : ''
+        ].filter(Boolean).join('');
         return `
-          <div class="focus-price-card ${{triggered ? 'alert' : ''}}">
+          <div class="focus-price-card ${{triggered ? 'alert' : ''}} ${{row.strong ? 'strong' : ''}}">
+            <div class="position-badges">${{badges}}</div>
             <strong>${{escapeHtml(row.stock_code)}} ${{escapeHtml(row.stock_name)}}</strong>
             <em class="price ${{tone}}">${{price ? price.toFixed(2) : '-'}}</em>
-            <span>止盈 ${{take ? take.toFixed(2) : '-'}} · 止损 ${{stop ? stop.toFixed(2) : '-'}}</span>
+            <span>成本 ${{row.entry ? row.entry.toFixed(2) : '-'}} · 浮盈 ${{pct(row.profitPct)}}</span>
+            <span>第一止盈 ${{take ? take.toFixed(2) : '-'}} · 防守止损 ${{stop ? stop.toFixed(2) : '-'}}</span>
+            <span>动态止损 ${{dynamicStop ? dynamicStop.toFixed(2) : '-'}} · ${{escapeHtml(row.status)}}</span>
             <span>${{quote.pct_change !== undefined ? `涨跌 ${{pct(quote.pct_change)}} · ` : ''}}${{quote.time ? escapeHtml(quote.time) : '等待实时刷新'}}</span>
           </div>
         `;
       }}).join('');
       box.innerHTML = `
         <div class="focus-realtime-head">
-          <h2>重点关注实时风控</h2>
+          <h2>模拟持仓实时风控</h2>
           <div class="focus-realtime-meta">
             <button class="sound-toggle ${{liveState.soundEnabled ? 'active' : ''}}" type="button" id="soundToggle">${{liveState.soundEnabled ? '声音已开' : '开启声音'}}</button>
             <button class="sound-toggle" type="button" id="alertHistoryButton">提醒记录</button>

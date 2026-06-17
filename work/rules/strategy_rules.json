@@ -1,0 +1,237 @@
+{
+  "version": "0.1",
+  "date": "2026-06-15",
+  "purpose": "Machine-readable draft rules for A股短线助手 candidate screening and review.",
+  "disclaimer": "Research and review aid only. Not investment advice.",
+  "screening": {
+    "pool_caps": {
+      "A": 5,
+      "B": 10,
+      "C": 20
+    },
+    "defense_mode": {
+      "allow_empty_recommendations": true,
+      "empty_when_no_a_pool": true,
+      "min_a_score": 85,
+      "min_b_score": 60,
+      "min_c_score": 45,
+      "max_severe_risk_count": 1,
+      "description": "底层防御：行情特别差、风险巨大或没有合适股票时，可以不推或少推，空仓优先。"
+    },
+    "replace_theme_keywords": false,
+    "theme_keywords": {
+      "电力": ["电力", "火电", "水电", "核电", "风电", "光伏发电", "绿电", "电网", "储能", "虚拟电厂", "特高压"],
+      "科技": ["科技", "软件", "信息技术", "人工智能", "AI", "算力", "数据中心", "云计算", "通信", "服务器", "信创", "网络安全", "机器人", "消费电子"],
+      "商业航天": ["商业航天", "卫星", "卫星互联网", "火箭", "航天", "北斗导航", "空天信息", "遥感", "导航", "低轨卫星"],
+      "半导体": ["半导体", "芯片", "集成电路", "晶圆", "封测", "光刻", "EDA", "存储芯片", "功率半导体", "第三代半导体", "先进封装"],
+      "PCB": ["PCB", "印制电路板", "覆铜板", "CCL", "HDI", "载板", "IC 载板", "高速板", "高频板"]
+    }
+  },
+  "workflow": {
+    "name": "盘前主题 → 盘中验证 → 尾盘执行",
+    "premarket_theme_layer": {
+      "purpose": "先确定当天值得观察的方向，只作为优先级加权，不直接构成买点。",
+      "inputs": ["海外行业映射", "产业新闻催化", "A股本地强势板块", "重点主题关键词"],
+      "pass_rule": "命中电力、科技、商业航天、半导体、PCB等重点主题，或后续接入的盘前主线池。"
+    },
+    "intraday_validation_layer": {
+      "purpose": "确认主题不是只停留在消息层，而是真的有A股量价和分时承接。",
+      "checks": ["板块联动", "量比放大", "分时强于均价线", "涨幅不过热", "收盘位置强", "尾盘没有跳水"],
+      "pass_rule": "至少出现量能、分时、板块或形态中的两类确认信号。"
+    },
+    "tail_execution_layer": {
+      "purpose": "只把通过前两层过滤的股票交给14:50-14:57尾盘买入策略。",
+      "buy_window": "14:50-14:57",
+      "preferred_time": "14:52",
+      "pass_rule": "必须命中S1/S2/S3/S4之一，并且没有严重过热或尾盘诱多风险；当日涨幅超过6.5%时，还必须满足板块涨停数>=3且有真实尾盘量确认，才允许进入重点关注。"
+    }
+  },
+  "global_rules": {
+    "universe": ["sse_main_board_a", "szse_main_board_a"],
+    "exclude": ["ST", "*ST", "S*ST", "chi_next", "star_market", "beijing_exchange", "b_share", "delisting"],
+    "buy_window": {
+      "start": "14:50",
+      "end": "14:57",
+      "preferred": "14:52"
+    },
+    "next_day_sell_window": {
+      "start": "09:30",
+      "end": "10:30"
+    },
+    "position_size_pct": {
+      "max_single_position_min": 10,
+      "max_single_position_max": 15
+    },
+    "stop_loss_pct": {
+      "min": -3,
+      "max": -2
+    },
+    "exit_discipline": {
+      "low_open_exit": "开盘低开超过-1.5%，9:35前不能修复则卖出。",
+      "flat_open_exit": "平开或小幅高开，9:45前站不上分时均价线则卖出。",
+      "normal_gap_take_profit": "高开0.5%-3%，冲到第一止盈点先卖50%，剩余仓位跌破分时均价线卖出。",
+      "large_gap_exit": "高开超过3%，第一波拉不动优先卖出；若放量继续上攻，只留小仓跟踪。",
+      "time_stop": "10:30前未走强，无论盈亏退出或至少降到观察仓。",
+      "logic_failure_exit": "板块龙头低开低走、个股跌破分时均价线且无量反抽、早盘冲高回落跌破开盘价，均视为逻辑失效。",
+      "moving_take_profit": "浮盈超过+1.5%后止损线上移到买入价；超过+2.5%后止损线上移到+1%；超过+4%后跌破分时均价线卖出。"
+    },
+    "market_risk_switch": {
+      "index_drop_pct": -1.5,
+      "action": "reduce_position_or_stay_empty"
+    },
+    "forbidden_setups": [
+      "tail_vertical_spike",
+      "late_chase_near_limit_up_or_overheated_gain",
+      "force_trade_on_broad_market_crash"
+    ]
+  },
+  "strategies": [
+    {
+      "strategy_id": "S1",
+      "name": "攻击型尾盘突破",
+      "strategy_type": "tail_breakout",
+      "preferred_pool": "A",
+      "style": "aggressive",
+      "entry_conditions": [
+        "after_14_30_stepwise_rise",
+        "break_intraday_high_or_key_resistance",
+        "close_ge_95pct_of_intraday_high",
+        "tail_30min_volume_expansion",
+        "volume_ratio_gt_1_2_to_1_5",
+        "price_above_vwap_most_of_day"
+      ],
+      "buy_condition": [
+        "confirmed_breakout",
+        "pullback_holds",
+        "prefer_low_entry_around_14_52"
+      ],
+      "exclude_conditions": [
+        "tail_vertical_spike",
+        "price_volume_divergence",
+        "near_limit_up_or_overheated_gain_without_support",
+        "broad_market_drop_gt_1_5_pct"
+      ],
+      "sell_plan": [
+        "if_gap_up_0_5_to_2_pct_and_volume_confirms_take_profit_on_1_5_to_3_pct_push",
+        "if_gap_up_gt_3_pct_sell_when_first_push_stalls",
+        "if_gap_down_below_minus_1_5_pct_exit_before_09_35"
+      ],
+      "stop_loss_pct": [-3, -2],
+      "risk_tags": ["高位追涨", "冲高回落", "放量滞涨", "尾盘诱多"]
+    },
+    {
+      "strategy_id": "S2",
+      "name": "均线回踩支撑尾盘企稳",
+      "strategy_type": "ma_pullback_support",
+      "preferred_pool": "B",
+      "style": "stable",
+      "entry_conditions": [
+        "ma5_gt_ma10_gt_ma20",
+        "moving_averages_upward",
+        "intraday_pullback_to_ma10_or_ma20_holds",
+        "tail_stabilizes_with_positive_close",
+        "close_above_ma5",
+        "turnover_rate_between_3_and_8_pct"
+      ],
+      "buy_condition": [
+        "support_confirmed_around_14_50",
+        "price_turns_up"
+      ],
+      "exclude_conditions": [
+        "key_ma_break_not_recovered",
+        "moving_averages_flat_or_turning_down",
+        "turnover_too_low_or_overheated"
+      ],
+      "sell_plan": [
+        "target_profit_1_5_to_3_pct",
+        "exit_if_next_day_breaks_entry_day_close_support"
+      ],
+      "stop_loss_pct": [-3, -2],
+      "risk_tags": ["趋势转弱", "缩量无承接", "支撑失效"]
+    },
+    {
+      "strategy_id": "S3",
+      "name": "主线热点尾盘回流抢筹",
+      "strategy_type": "theme_reflow",
+      "preferred_pool": "A/B",
+      "style": "sentiment",
+      "entry_conditions": [
+        "strongest_theme_confirmed_by_gain_and_limit_up_count",
+        "theme_limit_up_count_ge_3",
+        "stock_gain_between_3_and_5_pct",
+        "volume_ratio_gt_1_5",
+        "price_above_vwap_all_day",
+        "last_10min_volume_tail_rise"
+      ],
+      "buy_condition": [
+        "buy_between_14_52_and_14_56",
+        "theme_not_diving",
+        "tail_rise_continues"
+      ],
+      "exclude_conditions": [
+        "dragon_stock_gain_gt_7_pct",
+        "theme_tail_dives",
+        "leader_auction_weak",
+        "sentiment_fades"
+      ],
+      "sell_plan": [
+        "check_theme_leader_auction_at_09_25",
+        "hold_for_push_if_leader_gaps_up",
+        "exit_at_auction_or_open_if_leader_gaps_down"
+      ],
+      "stop_loss_pct": [-3, -2],
+      "risk_tags": ["情绪退潮", "板块未延续", "跟风弱化"]
+    },
+    {
+      "strategy_id": "S4",
+      "name": "地量底部首阳尾盘收稳",
+      "strategy_type": "low_volume_first_positive",
+      "preferred_pool": "C/B",
+      "style": "left_side_repair",
+      "entry_conditions": [
+        "prior_downtrend_or_sideways_decline",
+        "volume_lowest_in_recent_5_to_10_days",
+        "not_zero_volume_illiquid_stock",
+        "tail_mild_positive_close",
+        "close_gt_open",
+        "prefer_close_above_short_ma",
+        "kdj_or_rsi_turns_up_from_low_level"
+      ],
+      "buy_condition": [
+        "positive_candle_confirmed_near_close",
+        "price_no_longer_falls"
+      ],
+      "exclude_conditions": [
+        "liquidity_too_poor",
+        "downtrend_not_stabilized",
+        "fake_positive_without_volume",
+        "announcement_or_fundamental_risk"
+      ],
+      "sell_plan": [
+        "allow_1_to_2_days_validation",
+        "if_overnight_trade_target_about_2_pct"
+      ],
+      "stop_loss_pct": [-3, -2],
+      "risk_tags": ["左侧试错", "修复失败", "流动性不足"]
+    }
+  ],
+  "review_metrics": [
+    "strategy_id",
+    "pool_level",
+    "trade_date",
+    "entry_time",
+    "entry_price",
+    "planned_stop_loss",
+    "next_day_open",
+    "next_day_high",
+    "next_day_low",
+    "exit_time",
+    "exit_price",
+    "return_pct",
+    "max_drawdown_pct",
+    "entry_reason",
+    "exit_reason",
+    "mistake_tag",
+    "review_note"
+  ]
+}

@@ -32,6 +32,7 @@ DEFAULT_STOP_LOSS_PCT = 2.5
 
 LEDGER_FIELDS = [
     "trade_date",
+    "trade_time",
     "action",
     "stock_code",
     "stock_name",
@@ -135,6 +136,14 @@ def quote_price(row: Dict[str, str] | None, fallback: float) -> float:
     return num(row.get("close"), fallback) or fallback
 
 
+def quote_snapshot_time(row: Dict[str, str] | None) -> str:
+    if not row:
+        return ""
+    captured = str(row.get("captured_at") or row.get("time") or "").strip()
+    match = captured[-8:-3] if len(captured) >= 16 else ""
+    return match if ":" in match else ""
+
+
 def paper_sell_rule() -> str:
     return f"严格遵守 T+1：当日尾盘买入，最早次日按止盈/止损纪律退出；未触发则 {TIME_EXIT_LABEL} 时间止损全部卖出"
 
@@ -151,7 +160,7 @@ def can_time_exit(current_trade_date: str, now: datetime) -> bool:
     return now.time() >= TIME_EXIT_AFTER
 
 
-def sell_decision(position: Dict[str, object], quote: Dict[str, str], current_trade_date: str, now: datetime) -> tuple[float, str]:
+def sell_decision(position: Dict[str, object], quote: Dict[str, str], current_trade_date: str, now: datetime) -> tuple[float, str, str]:
     entry_price = float(position.get("entry_price", 0.0))
     open_price = num(quote.get("open"), entry_price) or entry_price
     high = num(quote.get("high"), open_price) or open_price
@@ -159,21 +168,27 @@ def sell_decision(position: Dict[str, object], quote: Dict[str, str], current_tr
     close = num(quote.get("close"), open_price) or open_price
     first_take = num(position.get("first_take_profit_point")) or round(entry_price * (1 + DEFAULT_TAKE_PROFIT_PCT / 100), 2)
     defensive_stop = num(position.get("defensive_stop_point")) or round(entry_price * (1 - DEFAULT_STOP_LOSS_PCT / 100), 2)
+    snapshot_time = quote_snapshot_time(quote)
 
     if open_price <= entry_price * 0.985:
-        return open_price, "T+1 次日 9:35 低开超过 -1.5%，按开盘价近似卖出"
+        return open_price, "T+1 次日 9:35 低开超过 -1.5%，按开盘价近似卖出", "09:35"
+    if open_price >= first_take and not position.get("first_take_done"):
+        return first_take, "T+1 次日开盘已越过第一止盈，按第一止盈点保守卖出", "09:30"
     if low <= defensive_stop:
-        return defensive_stop, "T+1 次日触发防守止损，按止损点近似卖出"
+        label = f"截至{snapshot_time}快照已触发" if snapshot_time else "已触发"
+        return defensive_stop, f"T+1 次日{label}防守止损，按止损点近似卖出", snapshot_time
     if high >= first_take and not position.get("first_take_done"):
-        return first_take, "T+1 次日触发第一止盈，按第一止盈点卖出"
+        label = f"截至{snapshot_time}快照已触发" if snapshot_time else "已触发"
+        return first_take, f"T+1 次日{label}第一止盈，按第一止盈点卖出", snapshot_time
     if can_time_exit(current_trade_date, now):
-        return close, f"T+1 次日未触发止盈止损，{TIME_EXIT_LABEL} 时间止损全部卖出"
-    return 0.0, f"T+1 次日未触发止盈止损，等待 {TIME_EXIT_LABEL} 时间止损"
+        return close, f"T+1 次日未触发止盈止损，{TIME_EXIT_LABEL} 时间止损全部卖出", TIME_EXIT_LABEL
+    return 0.0, f"T+1 次日未触发止盈止损，等待 {TIME_EXIT_LABEL} 时间止损", ""
 
 
 def append_ledger(
     ledger: List[Dict[str, object]],
     trade_date: str,
+    trade_time: str,
     action: str,
     code: str,
     name: str,
@@ -188,6 +203,7 @@ def append_ledger(
     ledger.append(
         {
             "trade_date": trade_date,
+            "trade_time": trade_time,
             "action": action,
             "stock_code": code,
             "stock_name": name,
@@ -200,6 +216,54 @@ def append_ledger(
             "note": note,
         }
     )
+
+
+def infer_ledger_time(row: Dict[str, object], quotes: Dict[str, Dict[str, str]], current_trade_date: str) -> str:
+    direct = str(row.get("trade_time") or row.get("time") or "").strip()
+    note = str(row.get("note") or "")
+    import re
+
+    found = re.search(r"(\d{1,2}:\d{2})", note)
+    if found:
+        return found.group(1).zfill(5)
+    if row.get("action") == "BUY":
+        return direct or BUY_TIME_LABEL
+    if row.get("trade_date") != current_trade_date:
+        if direct and ("截至" in note or "开盘已越过" in note or "时间止损" in note):
+            return direct
+        return ""
+    if direct:
+        return direct
+    quote = quotes.get(str(row.get("stock_code") or "")) if row.get("trade_date") == current_trade_date else None
+    if row.get("action") == "SELL" and "第一止盈" in note:
+        sell_price = num(row.get("price"))
+        if quote and num(quote.get("open")) >= sell_price > 0:
+            return "09:30"
+        return quote_snapshot_time(quote)
+    if row.get("action") == "SELL" and "防守止损" in note:
+        sell_price = num(row.get("price"))
+        if quote and num(quote.get("open")) <= sell_price:
+            return "09:30"
+        return quote_snapshot_time(quote)
+    return ""
+
+
+def backfill_ledger_fields(ledger: List[Dict[str, object]], quotes: Dict[str, Dict[str, str]], current_trade_date: str) -> None:
+    for row in ledger:
+        row["trade_time"] = infer_ledger_time(row, quotes, current_trade_date)
+        if row.get("trade_date") != current_trade_date or row.get("action") != "SELL":
+            continue
+        note = str(row.get("note") or "")
+        if "第一止盈" not in note or "截至" in note or "开盘已越过" in note:
+            continue
+        quote = quotes.get(str(row.get("stock_code") or ""))
+        sell_price = num(row.get("price"))
+        if quote and num(quote.get("open")) >= sell_price > 0:
+            row["note"] = note.replace("T+1 次日触发第一止盈", "T+1 次日开盘已越过第一止盈")
+            continue
+        snapshot_time = quote_snapshot_time(quote)
+        if snapshot_time:
+            row["note"] = note.replace("T+1 次日触发第一止盈", f"T+1 次日截至{snapshot_time}快照已触发第一止盈")
 
 
 def close_old_positions(
@@ -224,7 +288,7 @@ def close_old_positions(
         if not quote:
             positions.append(position)
             continue
-        sell_price, sell_note = sell_decision(position, quote, current_trade_date, now)
+        sell_price, sell_note, sell_time = sell_decision(position, quote, current_trade_date, now)
         if sell_price <= 0:
             positions.append(position)
             continue
@@ -243,6 +307,7 @@ def close_old_positions(
         append_ledger(
             ledger,
             current_trade_date,
+            sell_time,
             "SELL",
             code,
             str(position.get("stock_name", "")),
@@ -324,6 +389,7 @@ def buy_today_a_pool(
         append_ledger(
             ledger,
             trade_date,
+            BUY_TIME_LABEL,
             "BUY",
             row.get("stock_code", ""),
             row.get("stock_name", ""),
@@ -457,6 +523,7 @@ def main() -> None:
     quotes = market_by_code(market_rows)
     state = load_state(args.initial_capital)
     ledger: List[Dict[str, object]] = list(read_ledger())
+    backfill_ledger_fields(ledger, quotes, trade_date)
 
     now = datetime.now()
     close_old_positions(state, ledger, trade_date, quotes, now)

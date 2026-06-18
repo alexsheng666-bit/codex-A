@@ -31,6 +31,8 @@ COVERAGE_BASIC_ROWS = 1500
 COVERAGE_FULL_ROWS = 3000
 RAW_MIN_ROWS = 3000
 REFRESH_TIMES = ["09:32", "10:30", "11:25", "13:30", "14:15", "14:35", "14:45", "14:52", "14:57", "15:10", "16:10"]
+AUTH_USER = "alexsheng666"
+AUTH_PASSWORD = "MIma666"
 
 
 def esc(value: object) -> str:
@@ -393,6 +395,75 @@ def build_html(data: Dict[str, object]) -> str:
       color: var(--ink);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
       line-height: 1.5;
+    }}
+    body.auth-pending {{
+      background: #101820;
+    }}
+    body.auth-pending .shell,
+    body.auth-pending .detail-page {{
+      display: none;
+    }}
+    .auth-screen {{
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 22px;
+      background: #101820;
+      color: #fff;
+    }}
+    .auth-card {{
+      width: min(420px, 100%);
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 0 16px 44px rgba(0,0,0,.28);
+      padding: 22px;
+    }}
+    .auth-card h1 {{
+      margin: 0;
+      font-size: 24px;
+      color: var(--ink);
+    }}
+    .auth-card p {{
+      margin: 6px 0 18px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    .auth-form {{
+      display: grid;
+      gap: 12px;
+    }}
+    .auth-form label {{
+      display: grid;
+      gap: 6px;
+      color: #405065;
+      font-size: 12px;
+      font-weight: 800;
+    }}
+    .auth-form input {{
+      width: 100%;
+      height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0 10px;
+      background: #fff;
+      color: var(--ink);
+    }}
+    .auth-submit {{
+      height: 42px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--red);
+      color: #fff;
+      cursor: pointer;
+      font-weight: 800;
+    }}
+    .auth-error {{
+      min-height: 18px;
+      color: var(--red);
+      font-size: 12px;
+      font-weight: 700;
     }}
     button, input {{ font: inherit; }}
     .shell {{ min-height: 100vh; }}
@@ -1785,7 +1856,19 @@ def build_html(data: Dict[str, object]) -> str:
     }}
   </style>
 </head>
-<body>
+<body class="auth-pending">
+  <section class="auth-screen" id="authScreen">
+    <div class="auth-card">
+      <h1>A股短线助手</h1>
+      <p>请输入账号密码查看看板。</p>
+      <form class="auth-form" id="authForm">
+        <label>账号<input id="authUser" autocomplete="username" required></label>
+        <label>密码<input id="authPassword" type="password" autocomplete="current-password" required></label>
+        <button class="auth-submit" type="submit">进入看板</button>
+        <div class="auth-error" id="authError" aria-live="polite"></div>
+      </form>
+    </div>
+  </section>
   <div class="shell">
     <header class="topbar">
       <div class="topbar-inner">
@@ -1850,6 +1933,9 @@ def build_html(data: Dict[str, object]) -> str:
     const data = JSON.parse(document.getElementById('dashboard-data').textContent);
     data.candidates.forEach((row, index) => row.__idx = index);
     const state = {{ pool: 'ALL', theme: 'ALL', query: '' }};
+    const authUser = {json.dumps(AUTH_USER)};
+    const authPassword = {json.dumps(AUTH_PASSWORD)};
+    const authStorageKey = 'codex-a-dashboard-auth-ok';
     const liveState = {{
       quotes: {{}},
       lastUpdated: '',
@@ -1860,6 +1946,43 @@ def build_html(data: Dict[str, object]) -> str:
       paper: null,
       timer: null
     }};
+
+    function isLocalAccess() {{
+      const host = location.hostname;
+      return location.protocol === 'file:' || host === '' || host === 'localhost' || host === '127.0.0.1' || host === '::1';
+    }}
+
+    function unlockDashboard() {{
+      document.body.classList.remove('auth-pending');
+      document.getElementById('authScreen')?.remove();
+    }}
+
+    function initLoginGate() {{
+      if (isLocalAccess()) {{
+        unlockDashboard();
+        return;
+      }}
+      if (sessionStorage.getItem(authStorageKey) === '1') {{
+        unlockDashboard();
+        return;
+      }}
+      const form = document.getElementById('authForm');
+      const userInput = document.getElementById('authUser');
+      const passwordInput = document.getElementById('authPassword');
+      const errorBox = document.getElementById('authError');
+      userInput?.focus();
+      form?.addEventListener('submit', event => {{
+        event.preventDefault();
+        if (userInput.value.trim() === authUser && passwordInput.value === authPassword) {{
+          sessionStorage.setItem(authStorageKey, '1');
+          unlockDashboard();
+          return;
+        }}
+        errorBox.textContent = '账号或密码不正确';
+        passwordInput.value = '';
+        passwordInput.focus();
+      }});
+    }}
 
     const poolLabel = {{ A: '重点关注', B: '观察候补', C: '题材异动记录' }};
     const poolNotes = {{
@@ -3280,6 +3403,7 @@ def build_html(data: Dict[str, object]) -> str:
     renderExcluded();
     hydrateAlertedFromHistory();
     startRealtimeQuotes();
+    initLoginGate();
   </script>
 </body>
 </html>

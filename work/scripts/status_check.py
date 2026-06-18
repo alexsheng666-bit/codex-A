@@ -22,6 +22,7 @@ MANUAL_EXPORTS = ROOT / "01_原始资料" / "market_data" / "manual_exports"
 DASHBOARD = ROOT / "dashboard" / "index.html"
 COVERAGE_BASIC_ROWS = 1500
 COVERAGE_FULL_ROWS = 3000
+RAW_MIN_ROWS = 3000
 
 SOURCE_LABELS = {
     "ths_q_hs_snapshot": "同花顺行情列表",
@@ -68,6 +69,14 @@ def coverage_status(cache_rows: int) -> str:
     if cache_rows >= COVERAGE_BASIC_ROWS:
         return "基本可用"
     return "覆盖偏窄"
+
+
+def raw_health_status(raw_rows: int) -> str:
+    if raw_rows >= RAW_MIN_ROWS:
+        return "采集达标"
+    if raw_rows >= COVERAGE_BASIC_ROWS:
+        return "采集不足"
+    return "采集异常"
 
 
 def parse_trade_date(value: str) -> Optional[date]:
@@ -133,6 +142,8 @@ def build_status() -> Dict[str, object]:
         "trade_date": trade_date,
         **freshness_info(trade_date),
         "raw_rows": len(raw_rows),
+        "raw_health_status": raw_health_status(len(raw_rows)),
+        "raw_health_min_rows": RAW_MIN_ROWS,
         "eligible_rows": sum(1 for row in candidate_rows if row.get("universe_eligible") == "是"),
         "raw_candidate_count": raw_candidate_count(candidate_rows),
         "candidate_rows": len([row for row in candidate_rows if row.get("pool_level") in {"A", "B", "C"}]),
@@ -159,7 +170,7 @@ def print_text(status: Dict[str, object]) -> None:
     print("-" * 28)
     print(f"最近交易日: {status['trade_date'] or '-'}")
     print(f"数据新鲜度: {status['freshness_status']}")
-    print(f"原始采集: {status['raw_rows']} 行")
+    print(f"原始采集: {status['raw_rows']} 行（{status['raw_health_status']}，稳定线 {status['raw_health_min_rows']}）")
     print(f"有效主板: {status['eligible_rows']} 行")
     print(f"规则命中: {status['raw_candidate_count']} 只")
     print(f"最终候选: {status['candidate_rows']} 只")
@@ -186,6 +197,8 @@ def print_text(status: Dict[str, object]) -> None:
         print(f"提醒: {status['freshness_note']}")
     if status["coverage_status"] == "覆盖偏窄":
         print("提醒: 当前缓存不是全沪深主板，建议导入同花顺沪深主板列表后再刷新。")
+    if status["raw_health_status"] != "采集达标":
+        print("提醒: 原始采集低于 3000 行，本轮不建议作为最终推荐依据。")
 
 
 def main() -> None:

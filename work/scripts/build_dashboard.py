@@ -29,6 +29,7 @@ CLOUD_REFRESH_ENDPOINT = ROOT / "work" / "cloud" / "refresh_endpoint.txt"
 QUOTE_ENDPOINTS = ROOT / "work" / "cloud" / "quote_endpoints.txt"
 COVERAGE_BASIC_ROWS = 1500
 COVERAGE_FULL_ROWS = 3000
+RAW_MIN_ROWS = 3000
 REFRESH_TIMES = ["09:32", "10:30", "11:25", "13:30", "14:15", "14:35", "14:45", "14:52", "14:57", "15:10", "16:10"]
 
 
@@ -148,6 +149,26 @@ def coverage_status(cache_rows: int) -> str:
     if cache_rows >= COVERAGE_BASIC_ROWS:
         return "基本可用"
     return "覆盖偏窄"
+
+
+def raw_health_info(total_rows: int) -> Dict[str, object]:
+    if total_rows >= RAW_MIN_ROWS:
+        return {
+            "raw_health_status": "采集达标",
+            "raw_health_note": f"原始行情采集 {total_rows} 行，已达到 {RAW_MIN_ROWS} 行稳定线。",
+            "raw_health_min_rows": RAW_MIN_ROWS,
+        }
+    if total_rows >= COVERAGE_BASIC_ROWS:
+        return {
+            "raw_health_status": "采集不足",
+            "raw_health_note": f"原始行情采集 {total_rows} 行，低于 {RAW_MIN_ROWS} 行稳定线，本轮只适合观察，不建议作为最终推荐依据。",
+            "raw_health_min_rows": RAW_MIN_ROWS,
+        }
+    return {
+        "raw_health_status": "采集异常",
+        "raw_health_note": f"原始行情采集仅 {total_rows} 行，数据源明显不完整，应优先重新刷新或切换数据源。",
+        "raw_health_min_rows": RAW_MIN_ROWS,
+    }
 
 
 def parse_trade_date(value: str) -> Optional[date]:
@@ -297,6 +318,7 @@ def to_dashboard_data(rows: List[Dict[str, str]], source: Path) -> Dict[str, obj
     trade_dates = sorted({row.get("trade_date", "") for row in rows if row.get("trade_date")})
     trade_date = trade_dates[-1] if trade_dates else ""
     freshness = freshness_info(trade_date)
+    raw_health = raw_health_info(len(rows))
     cache_rows = count_csv_rows(UNIVERSE_CACHE)
     config = screening_config()
     quotes = market_quotes()
@@ -321,6 +343,7 @@ def to_dashboard_data(rows: List[Dict[str, str]], source: Path) -> Dict[str, obj
             "c_pool": pools["C"],
             "universe_cache": cache_rows,
             "coverage_status": coverage_status(cache_rows),
+            **raw_health,
             "manual_exports": count_manual_exports(),
             "defense_mode": config.get("defense_mode", {}),
         },
@@ -475,6 +498,52 @@ def build_html(data: Dict[str, object]) -> str:
       background: #fff8ec;
       border-color: #e5c486;
       color: #6a4306;
+    }}
+    .system-health {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 14px;
+    }}
+    .health-item {{
+      border: 1px solid #b9d8d1;
+      border-radius: 8px;
+      background: #eef8f5;
+      color: #174a43;
+      padding: 10px 12px;
+      min-width: 0;
+    }}
+    .health-item.warn {{
+      border-color: #e5c486;
+      background: #fff8ec;
+      color: #6a4306;
+    }}
+    .health-item.danger {{
+      border-color: #efc8c8;
+      background: #fff5f5;
+      color: #6f1d1d;
+    }}
+    .health-item span {{
+      display: block;
+      font-size: 11px;
+      font-weight: 800;
+      color: inherit;
+      opacity: .78;
+    }}
+    .health-item strong {{
+      display: block;
+      margin-top: 3px;
+      font-size: 16px;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+    }}
+    .health-item small {{
+      display: block;
+      margin-top: 4px;
+      font-size: 11px;
+      line-height: 1.35;
+      color: inherit;
+      opacity: .82;
     }}
     .risk-alerts {{
       display: none;
@@ -1681,6 +1750,7 @@ def build_html(data: Dict[str, object]) -> str:
       .cards {{ grid-template-columns: 1fr; }}
       .paper-hero .paper-metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .focus-price-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .system-health {{ grid-template-columns: 1fr; }}
       .paper-filter-bar {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
       .paper-summary-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .detail-row {{ grid-template-columns: 1fr; }}
@@ -1734,6 +1804,7 @@ def build_html(data: Dict[str, object]) -> str:
       <div class="notice">本看板用于盘后候选池整理和复盘辅助，不构成投资建议。重点看入选原因、风险标签和次日验证条件。</div>
       <div class="refresh-summary" id="refreshSummary"></div>
       <div class="freshness-banner" id="freshnessBanner"></div>
+      <section class="system-health" id="systemHealth"></section>
       <section class="risk-alerts" id="riskAlerts"></section>
       <section class="focus-realtime" id="focusRealtime"></section>
       <section class="funnel" id="screeningFunnel"></section>
@@ -2492,6 +2563,44 @@ def build_html(data: Dict[str, object]) -> str:
       }}
     }}
 
+    function healthTone(status) {{
+      if (status === '采集异常' || status === '日期异常' || status === '可能过期' || status === '无数据日期') return 'danger';
+      if (status === '采集不足' || status === '上一自然日数据') return 'warn';
+      return '';
+    }}
+
+    function renderSystemHealth() {{
+      const summary = data.summary || {{}};
+      const phase = data.recommendation_phase || {{}};
+      const items = [
+        {{
+          label: '原始采集',
+          value: `${{summary.total_rows || 0}} 行 · ${{summary.raw_health_status || '-'}}`,
+          note: summary.raw_health_note || `稳定线 ${{summary.raw_health_min_rows || 3000}} 行`,
+          tone: healthTone(summary.raw_health_status)
+        }},
+        {{
+          label: '数据日期',
+          value: `${{data.trade_date || '-'}} · ${{data.freshness_status || '-'}}`,
+          note: data.freshness_note || '-',
+          tone: healthTone(data.freshness_status)
+        }},
+        {{
+          label: '自动刷新节点',
+          value: (phase.refresh_times || []).join(' / ') || '-',
+          note: `当前阶段：${{phase.label || '-'}}`,
+          tone: ''
+        }}
+      ];
+      document.getElementById('systemHealth').innerHTML = items.map(item => `
+        <div class="health-item ${{item.tone}}">
+          <span>${{escapeHtml(item.label)}}</span>
+          <strong>${{escapeHtml(item.value)}}</strong>
+          <small>${{escapeHtml(item.note)}}</small>
+        </div>
+      `).join('');
+    }}
+
     function renderThemeFilters() {{
       const box = document.getElementById('themeFilters');
       if (!box) return;
@@ -3161,6 +3270,7 @@ def build_html(data: Dict[str, object]) -> str:
     renderRefreshSummary();
     renderCoverageNotice();
     renderFreshnessNotice();
+    renderSystemHealth();
     renderMetrics();
     renderFunnel();
     // Theme filters, workflow notes, and rule config are intentionally hidden.

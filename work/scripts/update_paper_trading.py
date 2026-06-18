@@ -17,6 +17,7 @@ DEFAULT_MARKET = ROOT / "01_原始资料" / "market_data" / "raw_csv" / "latest_
 PAPER_DIR = ROOT / "work" / "paper_trading"
 STATE_PATH = PAPER_DIR / "account_state.json"
 LEDGER_PATH = PAPER_DIR / "trade_ledger.csv"
+SNAPSHOT_PATH = PAPER_DIR / "position_snapshots.csv"
 POSITIONS_PATH = PAPER_DIR / "positions_latest.csv"
 PERFORMANCE_PATH = PAPER_DIR / "performance_latest.json"
 REPORT_PATH = PAPER_DIR / "paper_trading_report.md"
@@ -42,7 +43,28 @@ LEDGER_FIELDS = [
     "pnl_amount",
     "pnl_pct",
     "cash_after",
+    "sell_pressure_score",
+    "sell_signal",
+    "volume_ratio",
+    "turnover_rate",
     "note",
+]
+
+SNAPSHOT_FIELDS = [
+    "trade_date",
+    "snapshot_time",
+    "stock_code",
+    "stock_name",
+    "price",
+    "open",
+    "high",
+    "low",
+    "volume",
+    "turnover_amount",
+    "turnover_rate",
+    "volume_ratio",
+    "vwap_price",
+    "close_position_pct",
 ]
 
 
@@ -144,6 +166,85 @@ def quote_snapshot_time(row: Dict[str, str] | None) -> str:
     return match if ":" in match else ""
 
 
+def metric_summary(quote: Dict[str, str] | None) -> str:
+    if not quote:
+        return "量能数据缺失"
+    parts = []
+    volume_ratio = num(quote.get("volume_ratio"))
+    turnover_rate = num(quote.get("turnover_rate"))
+    amount = num(quote.get("turnover_amount") or quote.get("amount"))
+    if volume_ratio:
+        parts.append(f"量比{volume_ratio:.2f}")
+    if turnover_rate:
+        parts.append(f"换手{turnover_rate:.2f}%")
+    if amount:
+        parts.append(f"成交额{amount / 100_000_000:.1f}亿")
+    return "，".join(parts) if parts else "量能数据缺失"
+
+
+def snapshot_row(position: Dict[str, object], quote: Dict[str, str], trade_date: str) -> Dict[str, object]:
+    price = quote_price(quote, float(position.get("entry_price", 0.0)))
+    return {
+        "trade_date": trade_date,
+        "snapshot_time": quote_snapshot_time(quote) or datetime.now().strftime("%H:%M"),
+        "stock_code": position.get("stock_code", ""),
+        "stock_name": position.get("stock_name", ""),
+        "price": f"{price:.2f}",
+        "open": quote.get("open", ""),
+        "high": quote.get("high", ""),
+        "low": quote.get("low", ""),
+        "volume": quote.get("volume", ""),
+        "turnover_amount": quote.get("turnover_amount") or quote.get("amount", ""),
+        "turnover_rate": quote.get("turnover_rate", ""),
+        "volume_ratio": quote.get("volume_ratio", ""),
+        "vwap_price": quote.get("vwap_price", ""),
+        "close_position_pct": quote.get("close_position_pct", ""),
+    }
+
+
+def previous_snapshot(
+    snapshots: List[Dict[str, str]],
+    code: str,
+    trade_date: str,
+    snapshot_time: str,
+) -> Dict[str, str] | None:
+    matches = [
+        row
+        for row in snapshots
+        if row.get("stock_code") == code
+        and row.get("trade_date") == trade_date
+        and row.get("snapshot_time", "") < snapshot_time
+    ]
+    return sorted(matches, key=lambda row: row.get("snapshot_time", ""))[-1] if matches else None
+
+
+def append_position_snapshots(
+    snapshots: List[Dict[str, str]],
+    positions: List[Dict[str, object]],
+    quotes: Dict[str, Dict[str, str]],
+    trade_date: str,
+) -> None:
+    existing_keys = {
+        (row.get("trade_date", ""), row.get("snapshot_time", ""), row.get("stock_code", ""))
+        for row in snapshots
+    }
+    for position in positions:
+        code = str(position.get("stock_code", ""))
+        quote = quotes.get(code)
+        if not quote:
+            continue
+        row = snapshot_row(position, quote, trade_date)
+        key = (str(row.get("trade_date", "")), str(row.get("snapshot_time", "")), str(row.get("stock_code", "")))
+        if key in existing_keys:
+            continue
+        snapshots.append(row)
+        existing_keys.add(key)
+
+
+def write_snapshots(rows: List[Dict[str, object]]) -> None:
+    write_csv(SNAPSHOT_PATH, rows, SNAPSHOT_FIELDS)
+
+
 def paper_sell_rule() -> str:
     return f"严格遵守 T+1：当日尾盘买入，最早次日按止盈/止损纪律退出；未触发则 {TIME_EXIT_LABEL} 时间止损全部卖出"
 
@@ -160,7 +261,68 @@ def can_time_exit(current_trade_date: str, now: datetime) -> bool:
     return now.time() >= TIME_EXIT_AFTER
 
 
-def sell_decision(position: Dict[str, object], quote: Dict[str, str], current_trade_date: str, now: datetime) -> tuple[float, str, str]:
+def sell_pressure(position: Dict[str, object], quote: Dict[str, str], prev: Dict[str, str] | None) -> Dict[str, object]:
+    entry_price = float(position.get("entry_price", 0.0))
+    open_price = num(quote.get("open"), entry_price) or entry_price
+    high = num(quote.get("high"), open_price) or open_price
+    low = num(quote.get("low"), open_price) or open_price
+    close = num(quote.get("close"), open_price) or open_price
+    first_take = num(position.get("first_take_profit_point")) or round(entry_price * (1 + DEFAULT_TAKE_PROFIT_PCT / 100), 2)
+    volume_ratio = num(quote.get("volume_ratio"))
+    turnover_rate = num(quote.get("turnover_rate"))
+    close_position = num(quote.get("close_position_pct"))
+    vwap = num(quote.get("vwap_price"))
+    amount = num(quote.get("turnover_amount") or quote.get("amount"))
+    prev_price = num(prev.get("price")) if prev else 0.0
+    prev_amount = num(prev.get("turnover_amount")) if prev else 0.0
+    amount_delta = max(0.0, amount - prev_amount) if prev_amount else 0.0
+    price_delta_pct = round((close - prev_price) / prev_price * 100, 2) if prev_price else 0.0
+    above_vwap = bool(vwap and close >= vwap)
+
+    score = 35 if high >= first_take else 0
+    if vwap and close < vwap:
+        score += 25
+    if close_position and close_position < 70:
+        score += 20
+    if volume_ratio >= 3.2:
+        score += 15
+    if turnover_rate >= 12:
+        score += 15
+    if amount_delta >= 50_000_000 and price_delta_pct <= -0.3:
+        score += 20
+    if close >= entry_price * 1.04 and close_position and close_position < 82:
+        score += 10
+    if above_vwap and close_position >= 85:
+        score -= 20
+    if 1.2 <= volume_ratio <= 2.8 and price_delta_pct >= 0:
+        score -= 10
+    score = max(0, min(100, int(round(score))))
+
+    if score >= 75:
+        signal = "卖出压力高"
+    elif score >= 55:
+        signal = "卖出压力中"
+    else:
+        signal = "承接较强"
+    detail = f"{signal}{score}/100；{metric_summary(quote)}"
+    if prev_price:
+        detail += f"，较上次{price_delta_pct:+.2f}%"
+    return {
+        "score": score,
+        "signal": signal,
+        "detail": detail,
+        "volume_ratio": volume_ratio,
+        "turnover_rate": turnover_rate,
+    }
+
+
+def sell_decision(
+    position: Dict[str, object],
+    quote: Dict[str, str],
+    current_trade_date: str,
+    now: datetime,
+    prev_snapshot: Dict[str, str] | None,
+) -> tuple[float, str, str, Dict[str, object], bool]:
     entry_price = float(position.get("entry_price", 0.0))
     open_price = num(quote.get("open"), entry_price) or entry_price
     high = num(quote.get("high"), open_price) or open_price
@@ -169,20 +331,24 @@ def sell_decision(position: Dict[str, object], quote: Dict[str, str], current_tr
     first_take = num(position.get("first_take_profit_point")) or round(entry_price * (1 + DEFAULT_TAKE_PROFIT_PCT / 100), 2)
     defensive_stop = num(position.get("defensive_stop_point")) or round(entry_price * (1 - DEFAULT_STOP_LOSS_PCT / 100), 2)
     snapshot_time = quote_snapshot_time(quote)
+    pressure = sell_pressure(position, quote, prev_snapshot)
+    sell_all_on_take = int(pressure["score"]) >= 75
 
     if open_price <= entry_price * 0.985:
-        return open_price, "T+1 次日 9:35 低开超过 -1.5%，按开盘价近似卖出", "09:35"
+        return open_price, f"T+1 次日 9:35 低开超过 -1.5%，按开盘价近似卖出；{pressure['detail']}", "09:35", pressure, True
     if open_price >= first_take and not position.get("first_take_done"):
-        return first_take, "T+1 次日开盘已越过第一止盈，按第一止盈点保守卖出", "09:30"
+        action = "量能压力偏高，卖出全部" if sell_all_on_take else "承接尚可，先卖半仓"
+        return first_take, f"T+1 次日开盘已越过第一止盈，按第一止盈点保守卖出；{pressure['detail']}，{action}", "09:30", pressure, sell_all_on_take
     if low <= defensive_stop:
         label = f"截至{snapshot_time}快照已触发" if snapshot_time else "已触发"
-        return defensive_stop, f"T+1 次日{label}防守止损，按止损点近似卖出", snapshot_time
+        return defensive_stop, f"T+1 次日{label}防守止损，按止损点近似卖出；{pressure['detail']}", snapshot_time, pressure, True
     if high >= first_take and not position.get("first_take_done"):
         label = f"截至{snapshot_time}快照已触发" if snapshot_time else "已触发"
-        return first_take, f"T+1 次日{label}第一止盈，按第一止盈点卖出", snapshot_time
+        action = "量能压力偏高，卖出全部" if sell_all_on_take else "承接尚可，先卖半仓"
+        return first_take, f"T+1 次日{label}第一止盈，按第一止盈点卖出；{pressure['detail']}，{action}", snapshot_time, pressure, sell_all_on_take
     if can_time_exit(current_trade_date, now):
-        return close, f"T+1 次日未触发止盈止损，{TIME_EXIT_LABEL} 时间止损全部卖出", TIME_EXIT_LABEL
-    return 0.0, f"T+1 次日未触发止盈止损，等待 {TIME_EXIT_LABEL} 时间止损", ""
+        return close, f"T+1 次日未触发止盈止损，{TIME_EXIT_LABEL} 时间止损全部卖出；{pressure['detail']}", TIME_EXIT_LABEL, pressure, True
+    return 0.0, f"T+1 次日未触发止盈止损，等待 {TIME_EXIT_LABEL} 时间止损；{pressure['detail']}", "", pressure, False
 
 
 def append_ledger(
@@ -199,6 +365,10 @@ def append_ledger(
     pnl_pct: float,
     cash_after: float,
     note: str,
+    sell_pressure_score: object = "",
+    sell_signal: str = "",
+    volume_ratio: object = "",
+    turnover_rate: object = "",
 ) -> None:
     ledger.append(
         {
@@ -213,6 +383,10 @@ def append_ledger(
             "pnl_amount": f"{pnl_amount:.2f}",
             "pnl_pct": f"{pnl_pct:.2f}",
             "cash_after": f"{cash_after:.2f}",
+            "sell_pressure_score": sell_pressure_score,
+            "sell_signal": sell_signal,
+            "volume_ratio": volume_ratio,
+            "turnover_rate": turnover_rate,
             "note": note,
         }
     )
@@ -253,10 +427,30 @@ def backfill_ledger_fields(ledger: List[Dict[str, object]], quotes: Dict[str, Di
         row["trade_time"] = infer_ledger_time(row, quotes, current_trade_date)
         if row.get("trade_date") != current_trade_date or row.get("action") != "SELL":
             continue
+        quote = quotes.get(str(row.get("stock_code") or ""))
+        if quote:
+            if not row.get("volume_ratio"):
+                value = num(quote.get("volume_ratio"))
+                row["volume_ratio"] = f"{value:.2f}" if value else ""
+            if not row.get("turnover_rate"):
+                value = num(quote.get("turnover_rate"))
+                row["turnover_rate"] = f"{value:.2f}" if value else ""
+            if not row.get("sell_signal") or not row.get("sell_pressure_score"):
+                shares = num(row.get("shares"))
+                amount = num(row.get("amount"))
+                pnl = num(row.get("pnl_amount"))
+                cost = max(0.0, amount - pnl)
+                entry_price = cost / shares if shares else num(row.get("price"))
+                pseudo_position = {
+                    "entry_price": entry_price,
+                    "first_take_profit_point": row.get("price"),
+                }
+                pressure = sell_pressure(pseudo_position, quote, None)
+                row["sell_pressure_score"] = pressure.get("score", "")
+                row["sell_signal"] = pressure.get("signal", "")
         note = str(row.get("note") or "")
         if "第一止盈" not in note or "截至" in note or "开盘已越过" in note:
             continue
-        quote = quotes.get(str(row.get("stock_code") or ""))
         sell_price = num(row.get("price"))
         if quote and num(quote.get("open")) >= sell_price > 0:
             row["note"] = note.replace("T+1 次日触发第一止盈", "T+1 次日开盘已越过第一止盈")
@@ -271,6 +465,7 @@ def close_old_positions(
     ledger: List[Dict[str, object]],
     current_trade_date: str,
     quotes: Dict[str, Dict[str, str]],
+    snapshots: List[Dict[str, str]],
     now: datetime,
 ) -> None:
     cash = float(state.get("cash", 0.0))
@@ -288,11 +483,13 @@ def close_old_positions(
         if not quote:
             positions.append(position)
             continue
-        sell_price, sell_note, sell_time = sell_decision(position, quote, current_trade_date, now)
+        snapshot_time = quote_snapshot_time(quote)
+        prev = previous_snapshot(snapshots, code, current_trade_date, snapshot_time)
+        sell_price, sell_note, sell_time, pressure, sell_all = sell_decision(position, quote, current_trade_date, now, prev)
         if sell_price <= 0:
             positions.append(position)
             continue
-        if "第一止盈" in sell_note:
+        if "第一止盈" in sell_note and not sell_all:
             sell_shares = max(LOT_SIZE, int((shares * 0.5) // LOT_SIZE) * LOT_SIZE)
             sell_shares = min(sell_shares, shares)
         else:
@@ -318,6 +515,10 @@ def close_old_positions(
             pnl_pct,
             cash,
             f"{sell_note}{'，剩余仓位继续强势跟踪' if sell_shares < shares else ''}；盈亏滚入下一轮本金",
+            pressure.get("score", ""),
+            str(pressure.get("signal", "")),
+            f"{float(pressure.get('volume_ratio') or 0):.2f}" if pressure.get("volume_ratio") else "",
+            f"{float(pressure.get('turnover_rate') or 0):.2f}" if pressure.get("turnover_rate") else "",
         )
         remaining_shares = shares - sell_shares
         if remaining_shares > 0:
@@ -523,10 +724,13 @@ def main() -> None:
     quotes = market_by_code(market_rows)
     state = load_state(args.initial_capital)
     ledger: List[Dict[str, object]] = list(read_ledger())
+    snapshots: List[Dict[str, str]] = read_csv(SNAPSHOT_PATH)
     backfill_ledger_fields(ledger, quotes, trade_date)
 
     now = datetime.now()
-    close_old_positions(state, ledger, trade_date, quotes, now)
+    pre_close_positions = list(state.get("positions", []))
+    close_old_positions(state, ledger, trade_date, quotes, snapshots, now)
+    append_position_snapshots(snapshots, pre_close_positions, quotes, trade_date)
     note = "未到14:57，等待尾盘模拟买入"
     if can_buy_tail(trade_date, now):
         before_buys = len([row for row in ledger if row.get("action") == "BUY"])
@@ -535,6 +739,7 @@ def main() -> None:
         note = "已按重点关注平均模拟建仓" if after_buys > before_buys else "当日已建仓或暂无重点关注，不重复买入"
     mark_to_market(state, quotes)
     write_outputs(state, ledger, trade_date, note)
+    write_snapshots(snapshots)
     save_state(state)
 
     print(f"Paper trading date: {trade_date}")

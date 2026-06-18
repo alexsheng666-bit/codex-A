@@ -3028,6 +3028,9 @@ def build_html(data: Dict[str, object]) -> str:
           const pnl = paperPnlAmount(row);
           const actionLabel = row.action === 'SELL' ? '卖出' : '买入';
           const actionClass = row.action === 'SELL' ? 'sell' : 'buy';
+          const sellSignal = row.action === 'SELL'
+            ? `${{escapeHtml(row.sell_signal || '-')}}${{row.sell_pressure_score ? ` ${{escapeHtml(row.sell_pressure_score)}}/100` : ''}}${{row.volume_ratio ? `<br><span class="muted">量比${{escapeHtml(row.volume_ratio)}} 换手${{escapeHtml(row.turnover_rate || '-')}}%</span>` : ''}}`
+            : '-';
           return `
             <tr>
               <td>${{escapeHtml(row.trade_date || '-')}}</td>
@@ -3039,10 +3042,11 @@ def build_html(data: Dict[str, object]) -> str:
               <td>${{money(row.amount)}}</td>
               <td class="${{pnlTone(pnl)}}-text">${{signedMoney(pnl)}}</td>
               <td class="${{pnlTone(pnl)}}-text">${{pct(paperPnlPct(row))}}</td>
+              <td>${{sellSignal}}</td>
               <td class="note-cell">${{escapeHtml(row.note || '-')}}</td>
             </tr>
           `;
-        }}).join('') : '<tr><td colspan="10">没有符合条件的交易记录。</td></tr>';
+        }}).join('') : '<tr><td colspan="11">没有符合条件的交易记录。</td></tr>';
       }};
       Object.entries(controls).forEach(([key, control]) => {{
         if (!control || key === 'calendarMonth') return;
@@ -3158,7 +3162,7 @@ def build_html(data: Dict[str, object]) -> str:
             <div class="paper-table-wrap" style="margin-top:10px">
               <table class="paper-table">
                 <thead>
-                  <tr><th>日期</th><th>时间</th><th>方向</th><th>股票</th><th>价格</th><th>数量</th><th>成交额</th><th>利润值</th><th>利润率</th><th>说明</th></tr>
+                  <tr><th>日期</th><th>时间</th><th>方向</th><th>股票</th><th>价格</th><th>数量</th><th>成交额</th><th>利润值</th><th>利润率</th><th>卖出判断</th><th>说明</th></tr>
                 </thead>
                 <tbody id="paperLedgerRows"></tbody>
               </table>

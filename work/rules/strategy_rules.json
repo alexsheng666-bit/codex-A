@@ -40,9 +40,9 @@
       "pass_rule": "至少出现量能、分时、板块或形态中的两类确认信号。"
     },
     "tail_execution_layer": {
-      "purpose": "只把通过前两层过滤的股票交给14:50-14:57尾盘买入策略。",
-      "buy_window": "14:50-14:57",
-      "preferred_time": "14:52",
+      "purpose": "14:50生成第一版尾盘推荐；14:55用最新价格、成交量、换手率等数据二次校验，并把最终推荐交给模拟盘买入策略。",
+      "buy_window": "14:55",
+      "preferred_time": "14:55",
       "pass_rule": "必须命中S1/S2/S3/S4之一，并且没有严重过热或尾盘诱多风险；当日涨幅超过6.5%时，还必须满足板块涨停数>=3且有真实尾盘量确认，才允许进入重点关注。"
     }
   },
@@ -50,9 +50,9 @@
     "universe": ["sse_main_board_a", "szse_main_board_a"],
     "exclude": ["ST", "*ST", "S*ST", "chi_next", "star_market", "beijing_exchange", "b_share", "delisting"],
     "buy_window": {
-      "start": "14:50",
-      "end": "14:57",
-      "preferred": "14:52"
+      "start": "14:55",
+      "end": "14:55",
+      "preferred": "14:55"
     },
     "next_day_sell_window": {
       "start": "09:30",
@@ -103,7 +103,7 @@
       "buy_condition": [
         "confirmed_breakout",
         "pullback_holds",
-        "prefer_low_entry_around_14_52"
+        "prefer_low_entry_after_14_50_review"
       ],
       "exclude_conditions": [
         "tail_vertical_spike",
@@ -164,7 +164,7 @@
         "last_10min_volume_tail_rise"
       ],
       "buy_condition": [
-        "buy_between_14_52_and_14_56",
+        "buy_after_14_55_strategy_confirmation",
         "theme_not_diving",
         "tail_rise_continues"
       ],

@@ -594,7 +594,7 @@ def workflow_assessment(
 
     if pool == "A" and strategies and intraday_status == "通过" and severe_risk_count == 0:
         tail_status = "可尾盘观察"
-        tail_detail = "14:50-14:57按命中策略验证，不追直线急拉"
+        tail_detail = "14:50生成第一版推荐；14:55按最新价格、成交量、换手率等二次校验后生成最终推荐并模拟盘执行，不追直线急拉"
     elif pool and strategies:
         tail_status = "等待确认"
         tail_detail = "有策略形态，但需先排除过热、跳水或承接不足"

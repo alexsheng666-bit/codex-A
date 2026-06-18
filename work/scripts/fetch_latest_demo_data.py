@@ -59,38 +59,40 @@ T = TypeVar("T")
 THEME_KEYWORDS = {theme: list(keywords) for theme, keywords in DEFAULT_THEME_KEYWORDS.items()}
 
 SINA_FOCUS_STOCKS = [
-    ("sh600900", "电力", "水电;绿电"),
-    ("sh601985", "电力", "核电;绿电"),
-    ("sh600795", "电力", "火电;绿电"),
-    ("sh600011", "电力", "火电"),
-    ("sh600027", "电力", "火电"),
-    ("sz000539", "电力", "火电;绿电"),
-    ("sz000600", "电力", "火电"),
-    ("sz001896", "电力", "电力"),
-    ("sh600100", "科技", "人工智能;算力;数据中心"),
-    ("sz000063", "科技", "通信;算力;科技"),
-    ("sz000066", "科技", "信创;科技"),
-    ("sz002230", "科技", "人工智能;软件"),
-    ("sz000977", "科技", "服务器;算力;数据中心"),
-    ("sz002415", "科技", "人工智能;安防;科技"),
-    ("sz000547", "商业航天", "航天;卫星互联网;北斗导航"),
-    ("sh600879", "商业航天", "航天;卫星"),
-    ("sh600118", "商业航天", "卫星;航天"),
-    ("sh600501", "商业航天", "商业航天;航天"),
-    ("sz002465", "商业航天", "卫星通信;北斗导航"),
-    ("sz002151", "商业航天", "北斗导航;卫星"),
-    ("sh600584", "半导体", "半导体;封测;芯片"),
-    ("sh600703", "半导体", "半导体;芯片"),
-    ("sz002049", "半导体", "半导体;芯片"),
-    ("sz002371", "半导体", "半导体;设备;芯片"),
-    ("sz002185", "半导体", "半导体;封测"),
-    ("sh600460", "半导体", "半导体;芯片"),
-    ("sh603501", "半导体", "半导体;芯片"),
-    ("sz002463", "PCB", "PCB;高速板;AI服务器"),
-    ("sz002384", "PCB", "PCB;消费电子"),
-    ("sz002916", "PCB", "PCB;封装基板"),
-    ("sh603228", "PCB", "PCB;印制电路板"),
-    ("sz002938", "PCB", "PCB;消费电子"),
+    # Emergency quote fallback only. Industry/concept labels stay empty here:
+    # labels must come from trusted source fields or verified business data.
+    ("sh600900", "", ""),
+    ("sh601985", "", ""),
+    ("sh600795", "", ""),
+    ("sh600011", "", ""),
+    ("sh600027", "", ""),
+    ("sz000539", "", ""),
+    ("sz000600", "", ""),
+    ("sz001896", "", ""),
+    ("sh600100", "", ""),
+    ("sz000063", "", ""),
+    ("sz000066", "", ""),
+    ("sz002230", "", ""),
+    ("sz000977", "", ""),
+    ("sz002415", "", ""),
+    ("sz000547", "", ""),
+    ("sh600879", "", ""),
+    ("sh600118", "", ""),
+    ("sh600501", "", ""),
+    ("sz002465", "", ""),
+    ("sz002151", "", ""),
+    ("sh600584", "", ""),
+    ("sh600703", "", ""),
+    ("sz002049", "", ""),
+    ("sz002371", "", ""),
+    ("sz002185", "", ""),
+    ("sh600460", "", ""),
+    ("sh603501", "", ""),
+    ("sz002463", "", ""),
+    ("sz002384", "", ""),
+    ("sz002916", "", ""),
+    ("sh603228", "", ""),
+    ("sz002938", "", ""),
 ]
 
 
@@ -198,7 +200,7 @@ def fetch_akshare_all() -> List[Dict[str, object]]:
         amount = safe_float(row.get("成交额"))
         volume = safe_float(row.get("成交量"))
         amplitude = safe_float(row.get("振幅"))
-        tags = theme_tags(name, "")
+        tags = theme_tags("")
         close_position = close / high * 100 if high else 0
         ma5 = round(close * 0.985, 2)
         ma10 = round(close * 0.97, 2)
@@ -354,7 +356,7 @@ def convert_ths_row(row: Dict[str, object]) -> Optional[Dict[str, object]]:
     high = round(close * (1 + max(amplitude, 0) / 200), 2) if close else 0
     low = round(close * (1 - max(amplitude, 0) / 200), 2) if close else 0
     open_price = pre_close
-    tags = theme_tags(name, "")
+    tags = theme_tags("")
     close_position = close / high * 100 if high else 0
     limit_up = pct_change >= 9.8
     ma5 = round(close * 0.985, 2)
@@ -445,7 +447,7 @@ def market_for(code: str) -> str:
     return "SZ"
 
 
-def theme_tags(_name: str, industry_or_concepts: str) -> List[str]:
+def theme_tags(industry_or_concepts: str) -> List[str]:
     text = str(industry_or_concepts or "").upper()
     tags = []
     for theme, keywords in THEME_KEYWORDS.items():
@@ -481,7 +483,7 @@ def convert_row(row: Dict[str, object], trade_date: str) -> Optional[Dict[str, o
         return None
 
     industry = str(row.get("f100") or "").strip()
-    tags = theme_tags(name, industry)
+    tags = theme_tags(industry)
 
     close = safe_float(row.get("f2"))
     pct_change = safe_float(row.get("f3"))
@@ -763,7 +765,7 @@ def convert_sina_values(
         industry, concepts = meta.get(code, ("", ""))
         turnover_rate = 3.8 if amount >= 1_000_000_000 else 2.0 if amount >= 300_000_000 else 0.8
         volume_ratio = 1.8 if amount >= 1_000_000_000 and pct_change > 2 else 1.35 if pct_change > 1 else 1.0
-        tags = theme_tags(name, f"{industry};{concepts}")
+        tags = theme_tags(f"{industry};{concepts}")
         limit_up = pct_change >= 9.7
         ma5 = round(close * 0.985, 2)
         ma10 = round(close * 0.97, 2)

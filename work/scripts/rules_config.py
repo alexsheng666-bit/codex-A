@@ -40,9 +40,9 @@ DEFAULT_WORKFLOW = {
         "pass_rule": "至少出现量能、分时、板块或形态中的两类确认信号。",
     },
     "tail_execution_layer": {
-        "purpose": "只把通过前两层过滤的股票交给14:50-14:57尾盘买入策略。",
-        "buy_window": "14:50-14:57",
-        "preferred_time": "14:52",
+        "purpose": "14:50生成第一版尾盘推荐；14:55用最新价格、成交量、换手率等数据二次校验，并把最终推荐交给模拟盘买入策略。",
+        "buy_window": "14:55",
+        "preferred_time": "14:55",
         "pass_rule": "必须命中S1/S2/S3/S4之一，并且没有严重风险。",
     },
 }

@@ -8,7 +8,10 @@ import csv
 import json
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,14 +24,21 @@ SNAPSHOT_PATH = PAPER_DIR / "position_snapshots.csv"
 POSITIONS_PATH = PAPER_DIR / "positions_latest.csv"
 PERFORMANCE_PATH = PAPER_DIR / "performance_latest.json"
 REPORT_PATH = PAPER_DIR / "paper_trading_report.md"
+TRADE_GATE_PATH = PAPER_DIR / "trade_gate_latest.json"
+QUOTE_ENDPOINTS_PATH = ROOT / "work" / "cloud" / "quote_endpoints.txt"
 INITIAL_CAPITAL = 1_000_000.0
-BUY_AFTER = time(14, 57)
-BUY_TIME_LABEL = "14:57"
+BUY_AFTER = time(14, 55)
+BUY_BEFORE = time(15, 0)
+BUY_TIME_LABEL = "14:55"
 TIME_EXIT_AFTER = time(14, 30)
 TIME_EXIT_LABEL = "14:30"
 LOT_SIZE = 100
 DEFAULT_TAKE_PROFIT_PCT = 2.0
 DEFAULT_STOP_LOSS_PCT = 2.5
+MARKET_TZ = ZoneInfo("Asia/Shanghai")
+MAX_EXECUTION_SNAPSHOT_AGE_MINUTES = 10
+REALTIME_CONFIRM_LIMIT = 30
+REALTIME_TIMEOUT_SECONDS = 8
 
 
 LEDGER_FIELDS = [
@@ -78,6 +88,10 @@ def num(value: object, default: float = 0.0) -> float:
         return default
 
 
+def market_now() -> datetime:
+    return datetime.now(MARKET_TZ).replace(tzinfo=None)
+
+
 def read_csv(path: Path) -> List[Dict[str, str]]:
     if not path.exists():
         return []
@@ -109,7 +123,7 @@ def write_ledger(rows: List[Dict[str, object]]) -> None:
 
 def trade_date_from(rows: List[Dict[str, str]]) -> str:
     dates = sorted({row.get("trade_date", "") for row in rows if row.get("trade_date")})
-    return dates[-1] if dates else datetime.now().strftime("%Y-%m-%d")
+    return dates[-1] if dates else market_now().strftime("%Y-%m-%d")
 
 
 def parse_date(value: str) -> date:
@@ -123,7 +137,59 @@ def can_buy_tail(trade_date: str, now: datetime) -> bool:
         return False
     if parsed != now.date():
         return False
-    return now.time() >= BUY_AFTER
+    return BUY_AFTER <= now.time() < BUY_BEFORE
+
+
+def parse_datetime(value: object) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    raw = raw.replace("T", " ").replace("Z", "").replace("/", "-")
+    if "." in raw:
+        raw = raw.split(".", 1)[0]
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def latest_snapshot_time(rows: List[Dict[str, str]], trade_date: str) -> datetime | None:
+    times = []
+    for row in rows:
+        if row.get("trade_date") and row.get("trade_date") != trade_date:
+            continue
+        captured = parse_datetime(row.get("captured_at") or row.get("time"))
+        if captured:
+            times.append(captured)
+    return max(times) if times else None
+
+
+def snapshot_freshness(rows: List[Dict[str, str]], trade_date: str, now: datetime) -> Dict[str, object]:
+    latest = latest_snapshot_time(rows, trade_date)
+    if not latest:
+        return {
+            "ok": False,
+            "latest_at": "",
+            "age_minutes": None,
+            "message": "未识别到行情快照时间，禁止自动交易",
+        }
+    age = max(0.0, (now - latest).total_seconds() / 60)
+    ok = latest.date() == now.date() and age <= MAX_EXECUTION_SNAPSHOT_AGE_MINUTES
+    if ok:
+        message = f"行情快照 {latest.strftime('%H:%M')}，距当前约 {age:.1f} 分钟，允许进入执行校验"
+    else:
+        message = (
+            f"行情快照过旧：最新 {latest.strftime('%Y-%m-%d %H:%M:%S')}，"
+            f"距当前约 {age:.1f} 分钟，禁止自动交易"
+        )
+    return {
+        "ok": ok,
+        "latest_at": latest.strftime("%Y-%m-%d %H:%M:%S"),
+        "age_minutes": round(age, 1),
+        "message": message,
+    }
 
 
 def load_state(initial_capital: float) -> Dict[str, object]:
@@ -166,6 +232,260 @@ def quote_snapshot_time(row: Dict[str, str] | None) -> str:
     return match if ":" in match else ""
 
 
+def eastmoney_secid(code: str) -> str:
+    clean = "".join(ch for ch in str(code or "") if ch.isdigit()).zfill(6)[-6:]
+    if not clean:
+        return ""
+    return f"1.{clean}" if clean.startswith("6") else f"0.{clean}"
+
+
+def normalize_code(code: object) -> str:
+    return "".join(ch for ch in str(code or "") if ch.isdigit()).zfill(6)[-6:]
+
+
+def read_quote_endpoints() -> List[str]:
+    endpoints: List[str] = []
+    if QUOTE_ENDPOINTS_PATH.exists():
+        for line in QUOTE_ENDPOINTS_PATH.read_text(encoding="utf-8").splitlines():
+            item = line.strip()
+            if not item or item.startswith("#"):
+                continue
+            endpoints.append(item.rstrip("/"))
+    return endpoints
+
+
+def fetch_json(url: str, headers: Dict[str, str] | None = None, timeout: int = REALTIME_TIMEOUT_SECONDS) -> Dict[str, object]:
+    request = Request(url, headers=headers or {"User-Agent": "Mozilla/5.0"})
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def fetch_eastmoney_realtime(codes: List[str]) -> Tuple[Dict[str, Dict[str, object]], str]:
+    secids = [eastmoney_secid(code) for code in codes]
+    secids = [item for item in secids if item]
+    if not secids:
+        return {}, "eastmoney"
+    fields = "f12,f14,f2,f3,f5,f6,f8,f10,f15,f16,f17,f18"
+    query = urlencode({"fltt": "2", "fields": fields, "secids": ",".join(secids)})
+    url = f"https://push2.eastmoney.com/api/qt/ulist.np/get?{query}"
+    payload = fetch_json(url, headers={"Referer": "https://quote.eastmoney.com/", "User-Agent": "Mozilla/5.0"})
+    rows = ((payload.get("data") or {}).get("diff") or []) if isinstance(payload, dict) else []
+    now_text = market_now().strftime("%Y-%m-%d %H:%M:%S")
+    quotes: Dict[str, Dict[str, object]] = {}
+    for row in rows:
+        code = normalize_code(row.get("f12"))
+        price = num(row.get("f2"))
+        pre_close = num(row.get("f18"))
+        if not code or price <= 0:
+            continue
+        quotes[code] = {
+            "code": code,
+            "name": row.get("f14") or "",
+            "price": price,
+            "open": num(row.get("f17")),
+            "pre_close": pre_close,
+            "high": num(row.get("f15")),
+            "low": num(row.get("f16")),
+            "volume": num(row.get("f5")),
+            "amount": num(row.get("f6")),
+            "turnover_rate": num(row.get("f8")),
+            "volume_ratio": num(row.get("f10")),
+            "pct_change": num(row.get("f3")),
+            "time": now_text,
+            "source": "eastmoney_realtime",
+        }
+    return quotes, "eastmoney"
+
+
+def fetch_worker_realtime(codes: List[str]) -> Tuple[Dict[str, Dict[str, object]], str]:
+    for endpoint in read_quote_endpoints():
+        url = f"{endpoint}/quotes?{urlencode({'codes': ','.join(codes)})}"
+        try:
+            payload = fetch_json(url)
+        except Exception:
+            continue
+        if not payload.get("ok"):
+            continue
+        raw_quotes = payload.get("quotes") or {}
+        quotes: Dict[str, Dict[str, object]] = {}
+        for code, quote in raw_quotes.items():
+            clean = normalize_code(code)
+            if not clean or not isinstance(quote, dict):
+                continue
+            quotes[clean] = {
+                "code": clean,
+                "name": quote.get("name") or "",
+                "price": num(quote.get("price")),
+                "open": num(quote.get("open")),
+                "pre_close": num(quote.get("pre_close")),
+                "high": num(quote.get("high")),
+                "low": num(quote.get("low")),
+                "volume": num(quote.get("volume")),
+                "amount": num(quote.get("amount")),
+                "turnover_rate": num(quote.get("turnover_rate")),
+                "volume_ratio": num(quote.get("volume_ratio")),
+                "pct_change": num(quote.get("pct_change")),
+                "time": quote.get("time") or payload.get("updated_at") or market_now().strftime("%Y-%m-%d %H:%M:%S"),
+                "source": payload.get("source") or "worker_quote",
+            }
+        if quotes:
+            return quotes, f"worker:{endpoint}"
+    return {}, "worker"
+
+
+def fetch_realtime_quotes(codes: List[str]) -> Tuple[Dict[str, Dict[str, object]], str, List[str]]:
+    errors: List[str] = []
+    clean_codes = [normalize_code(code) for code in codes]
+    clean_codes = [code for code in clean_codes if code]
+    quotes: Dict[str, Dict[str, object]] = {}
+    sources: List[str] = []
+    try:
+        eastmoney_quotes, source = fetch_eastmoney_realtime(clean_codes)
+        if eastmoney_quotes:
+            quotes.update(eastmoney_quotes)
+            sources.append(source)
+    except Exception as exc:
+        errors.append(f"Eastmoney小批量实时确认失败：{exc}")
+    missing_codes = [code for code in clean_codes if code not in quotes]
+    try:
+        if missing_codes or not quotes:
+            worker_quotes, source = fetch_worker_realtime(missing_codes or clean_codes)
+            if worker_quotes:
+                quotes.update(worker_quotes)
+                sources.append(source)
+    except Exception as exc:
+        errors.append(f"Worker实时确认失败：{exc}")
+    return quotes, "+".join(sources) if sources else "none", errors
+
+
+def quote_time_ok(quote: Dict[str, object], trade_date: str, now: datetime) -> bool:
+    quote_time = parse_datetime(quote.get("time"))
+    if not quote_time:
+        return False
+    if quote_time.date().strftime("%Y-%m-%d") != trade_date:
+        return False
+    age = abs((now - quote_time).total_seconds()) / 60
+    return age <= MAX_EXECUTION_SNAPSHOT_AGE_MINUTES
+
+
+def realtime_required_fields_ok(quote: Dict[str, object]) -> bool:
+    return (
+        num(quote.get("price")) > 0
+        and num(quote.get("volume")) > 0
+        and num(quote.get("amount")) > 0
+        and num(quote.get("turnover_rate")) > 0
+        and num(quote.get("volume_ratio")) > 0
+    )
+
+
+def apply_realtime_quote(row: Dict[str, str], quote: Dict[str, object]) -> None:
+    price = num(quote.get("price"))
+    if price <= 0:
+        return
+    row["buy_point"] = f"{price:.2f}"
+    row["close"] = f"{price:.2f}"
+    row["open"] = f"{num(quote.get('open')):.2f}" if num(quote.get("open")) else row.get("open", "")
+    row["high"] = f"{num(quote.get('high')):.2f}" if num(quote.get("high")) else row.get("high", "")
+    row["low"] = f"{num(quote.get('low')):.2f}" if num(quote.get("low")) else row.get("low", "")
+    row["pre_close"] = f"{num(quote.get('pre_close')):.2f}" if num(quote.get("pre_close")) else row.get("pre_close", "")
+    row["pct_change"] = f"{num(quote.get('pct_change')):.2f}"
+    row["volume"] = str(int(num(quote.get("volume"))))
+    row["turnover_amount"] = str(int(num(quote.get("amount"))))
+    row["turnover_rate"] = f"{num(quote.get('turnover_rate')):.2f}"
+    row["volume_ratio"] = f"{num(quote.get('volume_ratio')):.2f}"
+    row["captured_at"] = str(quote.get("time") or market_now().strftime("%Y-%m-%d %H:%M:%S"))
+    row["data_source"] = str(quote.get("source") or "realtime_confirm")
+
+
+def trade_gate_base(trade_date: str, now: datetime, snapshot_status: Dict[str, object]) -> Dict[str, object]:
+    return {
+        "checked_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "trade_date": trade_date,
+        "buy_window": f"{BUY_TIME_LABEL}-15:00",
+        "snapshot_ok": bool(snapshot_status.get("ok")),
+        "snapshot_latest_at": snapshot_status.get("latest_at", ""),
+        "snapshot_age_minutes": snapshot_status.get("age_minutes"),
+        "status": "快照可用" if snapshot_status.get("ok") else "快照过旧",
+        "message": snapshot_status.get("message", ""),
+        "execution_allowed": bool(snapshot_status.get("ok")),
+        "realtime_confirmed": False,
+        "realtime_source": "",
+        "a_pool_count": 0,
+        "confirmed_codes": [],
+        "missing_codes": [],
+        "stale_codes": [],
+        "field_missing_codes": [],
+        "errors": [],
+    }
+
+
+def write_trade_gate(gate: Dict[str, object]) -> None:
+    PAPER_DIR.mkdir(parents=True, exist_ok=True)
+    TRADE_GATE_PATH.write_text(json.dumps(gate, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def confirm_a_pool_realtime(
+    a_rows: List[Dict[str, str]],
+    trade_date: str,
+    now: datetime,
+) -> Dict[str, object]:
+    checked_rows = a_rows[:REALTIME_CONFIRM_LIMIT]
+    codes = [normalize_code(row.get("stock_code")) for row in checked_rows]
+    codes = [code for code in codes if code]
+    if not codes:
+        return {
+            "ok": False,
+            "source": "",
+            "confirmed_codes": [],
+            "missing_codes": [],
+            "stale_codes": [],
+            "field_missing_codes": [],
+            "errors": [],
+            "message": "A池为空，未进入尾盘买入",
+        }
+    quotes, source, errors = fetch_realtime_quotes(codes)
+    missing = [code for code in codes if code not in quotes]
+    stale = [code for code in codes if code in quotes and not quote_time_ok(quotes[code], trade_date, now)]
+    field_missing = [
+        code
+        for code in codes
+        if code in quotes and code not in stale and not realtime_required_fields_ok(quotes[code])
+    ]
+    confirmed = [
+        code
+        for code in codes
+        if code in quotes and code not in stale and code not in field_missing
+    ]
+    ok = bool(codes) and not missing and not stale and not field_missing
+    if ok:
+        for row in checked_rows:
+            code = normalize_code(row.get("stock_code"))
+            if code in quotes:
+                apply_realtime_quote(row, quotes[code])
+        message = f"A池 {len(confirmed)} 只已完成实时二次确认，允许尾盘模拟买入"
+    else:
+        reasons = []
+        if missing:
+            reasons.append(f"缺少实时行情 {len(missing)} 只")
+        if stale:
+            reasons.append(f"行情时间异常 {len(stale)} 只")
+        if field_missing:
+            reasons.append(f"量能/换手字段不足 {len(field_missing)} 只")
+        if errors:
+            reasons.append("；".join(errors))
+        message = "A池实时二次确认未通过，禁止尾盘模拟买入：" + "；".join(reasons or ["实时行情不可用"])
+    return {
+        "ok": ok,
+        "source": source,
+        "confirmed_codes": confirmed,
+        "missing_codes": missing,
+        "stale_codes": stale,
+        "field_missing_codes": field_missing,
+        "errors": errors,
+        "message": message,
+    }
+
+
 def metric_summary(quote: Dict[str, str] | None) -> str:
     if not quote:
         return "量能数据缺失"
@@ -186,7 +506,7 @@ def snapshot_row(position: Dict[str, object], quote: Dict[str, str], trade_date:
     price = quote_price(quote, float(position.get("entry_price", 0.0)))
     return {
         "trade_date": trade_date,
-        "snapshot_time": quote_snapshot_time(quote) or datetime.now().strftime("%H:%M"),
+        "snapshot_time": quote_snapshot_time(quote) or market_now().strftime("%H:%M"),
         "stock_code": position.get("stock_code", ""),
         "stock_name": position.get("stock_name", ""),
         "price": f"{price:.2f}",
@@ -405,7 +725,7 @@ def infer_ledger_time(row: Dict[str, object], quotes: Dict[str, Dict[str, str]],
     if row.get("trade_date") != current_trade_date:
         if direct and ("截至" in note or "开盘已越过" in note or "时间止损" in note):
             return direct
-        return ""
+            return direct or "未记录"
     if direct:
         return direct
     quote = quotes.get(str(row.get("stock_code") or "")) if row.get("trade_date") == current_trade_date else None
@@ -639,10 +959,16 @@ def mark_to_market(state: Dict[str, object], quotes: Dict[str, Dict[str, str]]) 
     state["cumulative_pnl"] = round(equity - initial, 2)
     state["cumulative_return_pct"] = round((equity - initial) / initial * 100, 2) if initial else 0.0
     state["realized_return_pct"] = round(realized / initial * 100, 2) if initial else 0.0
-    state["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    state["last_updated"] = market_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def write_outputs(state: Dict[str, object], ledger: List[Dict[str, object]], trade_date: str, note: str) -> None:
+def write_outputs(
+    state: Dict[str, object],
+    ledger: List[Dict[str, object]],
+    trade_date: str,
+    note: str,
+    trade_gate: Dict[str, object],
+) -> None:
     positions = list(state.get("positions", []))
     write_ledger(ledger)
     write_csv(
@@ -681,8 +1007,10 @@ def write_outputs(state: Dict[str, object], ledger: List[Dict[str, object]], tra
         "position_count": len(positions),
         "last_updated": state.get("last_updated", ""),
         "note": note,
+        "trade_gate": trade_gate,
     }
     PERFORMANCE_PATH.write_text(json.dumps(performance, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_trade_gate(trade_gate)
 
     lines = [
         "# 模拟交易账户",
@@ -727,18 +1055,79 @@ def main() -> None:
     snapshots: List[Dict[str, str]] = read_csv(SNAPSHOT_PATH)
     backfill_ledger_fields(ledger, quotes, trade_date)
 
-    now = datetime.now()
+    now = market_now()
+    snapshot_status = snapshot_freshness(market_rows, trade_date, now)
+    trade_gate = trade_gate_base(trade_date, now, snapshot_status)
     pre_close_positions = list(state.get("positions", []))
-    close_old_positions(state, ledger, trade_date, quotes, snapshots, now)
-    append_position_snapshots(snapshots, pre_close_positions, quotes, trade_date)
-    note = "未到14:57，等待尾盘模拟买入"
+    has_sell_candidates = any(str(position.get("entry_date", "")) < trade_date for position in pre_close_positions)
+    buy_window_open = can_buy_tail(trade_date, now)
+    execution_needs_fresh = has_sell_candidates or buy_window_open
+    note = "未到14:55，等待尾盘模拟买入"
+    if execution_needs_fresh and not snapshot_status.get("ok"):
+        trade_gate["execution_allowed"] = False
+        trade_gate["status"] = "闸门关闭"
+        note = str(snapshot_status.get("message") or "行情快照过旧，禁止自动交易")
+    else:
+        close_old_positions(state, ledger, trade_date, quotes, snapshots, now)
+        append_position_snapshots(snapshots, pre_close_positions, quotes, trade_date)
     if can_buy_tail(trade_date, now):
-        before_buys = len([row for row in ledger if row.get("action") == "BUY"])
-        buy_today_a_pool(state, ledger, candidates, trade_date)
-        after_buys = len([row for row in ledger if row.get("action") == "BUY"])
-        note = "已按重点关注平均模拟建仓" if after_buys > before_buys else "当日已建仓或暂无重点关注，不重复买入"
+        a_rows = [row for row in candidates if row.get("pool_level") == "A"]
+        trade_gate["a_pool_count"] = len(a_rows)
+        if not snapshot_status.get("ok"):
+            trade_gate["execution_allowed"] = False
+            trade_gate["status"] = "闸门关闭"
+            note = str(snapshot_status.get("message") or "行情快照过旧，禁止尾盘模拟买入")
+        elif bought_today(ledger, trade_date):
+            note = "当日已建仓，不重复买入"
+            trade_gate["message"] = note
+            trade_gate["status"] = "已建仓"
+        elif state.get("positions"):
+            note = "账户仍有持仓，不重复买入"
+            trade_gate["message"] = note
+            trade_gate["status"] = "已有持仓"
+        elif not a_rows:
+            note = "暂无A池候选，不进行尾盘买入"
+            trade_gate["message"] = note
+            trade_gate["status"] = "无A池"
+        else:
+            confirm = confirm_a_pool_realtime(a_rows, trade_date, now)
+            trade_gate.update(
+                {
+                    "realtime_confirmed": bool(confirm.get("ok")),
+                    "realtime_source": confirm.get("source", ""),
+                    "confirmed_codes": confirm.get("confirmed_codes", []),
+                    "missing_codes": confirm.get("missing_codes", []),
+                    "stale_codes": confirm.get("stale_codes", []),
+                    "field_missing_codes": confirm.get("field_missing_codes", []),
+                    "errors": confirm.get("errors", []),
+                    "message": confirm.get("message", ""),
+                    "execution_allowed": bool(confirm.get("ok")),
+                    "status": "实时确认通过" if confirm.get("ok") else "闸门关闭",
+                }
+            )
+            if confirm.get("ok"):
+                before_buys = len([row for row in ledger if row.get("action") == "BUY"])
+                buy_today_a_pool(state, ledger, candidates, trade_date)
+                after_buys = len([row for row in ledger if row.get("action") == "BUY"])
+                note = "已按A池实时二次确认结果平均模拟建仓" if after_buys > before_buys else "二次确认通过，但账户状态不满足重复买入"
+                trade_gate["message"] = note
+            else:
+                note = str(confirm.get("message") or "A池实时二次确认未通过，禁止尾盘模拟买入")
+    else:
+        try:
+            is_current_trade_day = parse_date(trade_date) == now.date()
+        except ValueError:
+            is_current_trade_day = False
+        if is_current_trade_day and now.time() >= BUY_BEFORE:
+            note = "已过14:55-15:00买入窗口，盘后不再新增模拟买入"
+            if not snapshot_status.get("ok"):
+                note = f"{note}；{snapshot_status.get('message')}"
+            trade_gate["message"] = note
+            trade_gate["status"] = "窗口已关闭" if snapshot_status.get("ok") else "闸门关闭"
     mark_to_market(state, quotes)
-    write_outputs(state, ledger, trade_date, note)
+    if not trade_gate.get("message"):
+        trade_gate["message"] = note
+    write_outputs(state, ledger, trade_date, note, trade_gate)
     write_snapshots(snapshots)
     save_state(state)
 

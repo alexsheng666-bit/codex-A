@@ -1,0 +1,33 @@
+{
+  "trade_date": "2026-06-18",
+  "initial_capital": 1000000.0,
+  "cash": 22006.0,
+  "market_value": 1002557.0,
+  "equity": 1024563.0,
+  "realized_pnl": 24563.0,
+  "unrealized_pnl": 0.0,
+  "cumulative_pnl": 24563.0,
+  "cumulative_return_pct": 2.46,
+  "position_count": 5,
+  "last_updated": "2026-06-18 23:49:58",
+  "note": "已过14:55-15:00买入窗口，盘后不再新增模拟买入；行情快照过旧：最新 2026-06-18 11:26:11，距当前约 743.8 分钟，禁止自动交易",
+  "trade_gate": {
+    "checked_at": "2026-06-18 23:49:58",
+    "trade_date": "2026-06-18",
+    "buy_window": "14:55-15:00",
+    "snapshot_ok": false,
+    "snapshot_latest_at": "2026-06-18 11:26:11",
+    "snapshot_age_minutes": 743.8,
+    "status": "闸门关闭",
+    "message": "已过14:55-15:00买入窗口，盘后不再新增模拟买入；行情快照过旧：最新 2026-06-18 11:26:11，距当前约 743.8 分钟，禁止自动交易",
+    "execution_allowed": false,
+    "realtime_confirmed": false,
+    "realtime_source": "",
+    "a_pool_count": 0,
+    "confirmed_codes": [],
+    "missing_codes": [],
+    "stale_codes": [],
+    "field_missing_codes": [],
+    "errors": []
+  }
+}

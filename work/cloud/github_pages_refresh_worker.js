@@ -70,6 +70,8 @@ function parseSinaQuotes(text) {
       low,
       volume: Number(fields[8] || 0),
       amount: Number(fields[9] || 0),
+      turnover_rate: 0,
+      volume_ratio: 0,
       time: `${fields[30] || ""} ${fields[31] || ""}`.trim(),
       pct_change: preClose ? Number(((price - preClose) / preClose * 100).toFixed(2)) : 0,
     };
@@ -96,6 +98,8 @@ function parseEastmoneyQuotes(payload) {
       low: Number(row.f16 || 0),
       volume: Number(row.f5 || 0),
       amount: Number(row.f6 || 0),
+      turnover_rate: Number(row.f8 || 0),
+      volume_ratio: Number(row.f10 || 0),
       time: new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }),
       pct_change: row.f3 !== undefined ? Number(row.f3 || 0) : (preClose ? Number(((price - preClose) / preClose * 100).toFixed(2)) : 0),
     };
@@ -125,7 +129,7 @@ async function fetchSinaQuotes(symbols) {
 }
 
 async function fetchEastmoneyQuotes(secids) {
-  const fields = "f12,f14,f2,f3,f5,f6,f15,f16,f17,f18";
+  const fields = "f12,f14,f2,f3,f5,f6,f8,f10,f15,f16,f17,f18";
   const quoteUrl = `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=${fields}&secids=${secids.join(",")}`;
   const response = await fetch(quoteUrl, {
     headers: {
@@ -161,13 +165,14 @@ async function handleQuotes(request, env) {
   } catch (error) {
     errors.push(String(error.message || error));
   }
-  const missingSecids = codes
-    .filter((code) => !quotes[String(code).replace(/\D/g, "").padStart(6, "0").slice(-6)])
-    .map(eastmoneySecid)
-    .filter(Boolean);
-  if (missingSecids.length || !sources.length) {
+  const needsEastmoneyMetrics = codes.some((code) => {
+    const clean = String(code).replace(/\D/g, "").padStart(6, "0").slice(-6);
+    const quote = quotes[clean];
+    return !quote || !quote.turnover_rate || !quote.volume_ratio;
+  });
+  if (needsEastmoneyMetrics || !sources.length) {
     try {
-      quotes = { ...quotes, ...(await fetchEastmoneyQuotes(missingSecids.length ? missingSecids : secids)) };
+      quotes = { ...quotes, ...(await fetchEastmoneyQuotes(secids)) };
       sources.push("eastmoney");
     } catch (error) {
       errors.push(String(error.message || error));

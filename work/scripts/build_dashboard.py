@@ -24,13 +24,14 @@ NEXT_DAY_REVIEW = ROOT / "work" / "review" / "next_day_review_latest.csv"
 PAPER_PERFORMANCE = ROOT / "work" / "paper_trading" / "performance_latest.json"
 PAPER_POSITIONS = ROOT / "work" / "paper_trading" / "positions_latest.csv"
 PAPER_LEDGER = ROOT / "work" / "paper_trading" / "trade_ledger.csv"
+PAPER_TRADE_GATE = ROOT / "work" / "paper_trading" / "trade_gate_latest.json"
 LATEST_MARKET = ROOT / "01_原始资料" / "market_data" / "raw_csv" / "latest_market_data.csv"
 CLOUD_REFRESH_ENDPOINT = ROOT / "work" / "cloud" / "refresh_endpoint.txt"
 QUOTE_ENDPOINTS = ROOT / "work" / "cloud" / "quote_endpoints.txt"
 COVERAGE_BASIC_ROWS = 1500
 COVERAGE_FULL_ROWS = 3000
 RAW_MIN_ROWS = 3000
-REFRESH_TIMES = ["09:32", "10:30", "11:25", "13:30", "14:15", "14:35", "14:45", "14:52", "14:57", "15:10", "16:10"]
+REFRESH_TIMES = ["09:32", "10:30", "11:25", "13:30", "14:15", "14:35", "14:45", "14:50", "14:55", "15:10", "16:10"]
 AUTH_USER = "alexsheng666"
 AUTH_PASSWORD = "MIma666"
 
@@ -288,9 +289,9 @@ def recommendation_phase(now: Optional[datetime] = None) -> Dict[str, object]:
         (time(14, 15), "午后观察", "观察午后资金回流和主题延续，不建议直接执行。", False),
         (time(14, 35), "午后预选", "开始锁定候选范围，买入、止盈、止损点位仅作预估。", False),
         (time(14, 45), "尾盘候选", "开始给出尾盘候选和初步执行点位，继续剔除急拉诱多。", False),
-        (time(14, 52), "候选收窄", "收窄候选，重点核对量能、收盘位置和风险标签。", False),
-        (time(14, 57), "准推荐", "最终确认前版本，用于人工准备和模拟盘候选等待。", False),
-        (time(15, 0), "最终推荐", "15:00 前最终推荐窗口，模拟盘仅在 14:57 后按最终名单执行。", True),
+        (time(14, 50), "第一版推荐", "基于当前行情生成尾盘第一版推荐，仅用于候选确认，不触发模拟盘买入。", False),
+        (time(14, 55), "最终推荐", "用最新价格、成交量、换手率等数据二次校验第一版推荐，并按最终名单执行模拟盘买入。", True),
+        (time(15, 0), "盘后复盘", "15:00 后只复盘当天结果，不再新增模拟买入。", False),
         (time(15, 10), "收盘复盘", "不再生成买入建议，记录收盘后复盘快照。", False),
         (time(23, 59, 59), "盘后复盘", "稳定收盘数据复盘，用于次日计划。", False),
     ]
@@ -358,6 +359,7 @@ def to_dashboard_data(rows: List[Dict[str, str]], source: Path) -> Dict[str, obj
         "next_day_review": read_optional_csv(NEXT_DAY_REVIEW),
         "paper_trading": {
             "performance": read_optional_json(PAPER_PERFORMANCE),
+            "trade_gate": read_optional_json(PAPER_TRADE_GATE),
             "positions": read_optional_csv(PAPER_POSITIONS),
             "ledger": enrich_paper_ledger(ledger, quotes),
         },
@@ -481,6 +483,9 @@ def build_html(data: Dict[str, object]) -> str:
       gap: 18px;
       align-items: end;
     }}
+    .topbar-inner > div {{
+      min-width: 0;
+    }}
     h1 {{
       margin: 0;
       font-size: 30px;
@@ -490,6 +495,7 @@ def build_html(data: Dict[str, object]) -> str:
       margin-top: 6px;
       color: #c7d0dc;
       font-size: 14px;
+      overflow-wrap: anywhere;
     }}
     .status-pill {{
       display: inline-flex;
@@ -500,6 +506,7 @@ def build_html(data: Dict[str, object]) -> str:
       border: 1px solid rgba(255,255,255,.18);
       border-radius: 8px;
       background: rgba(255,255,255,.08);
+      max-width: 100%;
       white-space: nowrap;
     }}
     .top-actions {{
@@ -510,14 +517,16 @@ def build_html(data: Dict[str, object]) -> str:
       align-items: center;
     }}
     .refresh-button {{
-      height: 40px;
+      height: 28px;
       border: 1px solid #c9d6e4;
-      border-radius: 8px;
-      padding: 0 14px;
+      border-radius: 6px;
+      padding: 0 10px;
       color: #23405f;
       background: #f6f9fc;
       cursor: pointer;
-      font-weight: 700;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
     }}
     .refresh-button:hover {{
       border-color: #8db2d8;
@@ -536,12 +545,13 @@ def build_html(data: Dict[str, object]) -> str:
     .maintenance-actions {{
       display: flex;
       align-items: center;
-      gap: 10px;
-      margin-top: 8px;
+      gap: 6px;
+      margin-top: 3px;
     }}
     .maintenance-actions .refresh-state {{
       min-width: auto;
       color: #66768a;
+      font-size: 11px;
       text-align: left;
     }}
     .status-dot {{
@@ -553,7 +563,7 @@ def build_html(data: Dict[str, object]) -> str:
     main {{
       max-width: 1320px;
       margin: 0 auto;
-      padding: 18px 22px 44px;
+      padding: 14px 22px 44px;
     }}
     .notice {{
       display: none;
@@ -587,17 +597,18 @@ def build_html(data: Dict[str, object]) -> str:
     }}
     .system-health {{
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-      margin-bottom: 14px;
+      grid-template-columns: minmax(150px, .75fr) minmax(150px, .75fr) minmax(180px, .9fr) minmax(250px, 1.2fr) minmax(140px, .65fr);
+      gap: 6px;
+      margin-bottom: 8px;
     }}
     .health-item {{
       border: 1px solid #b9d8d1;
-      border-radius: 8px;
+      border-radius: 7px;
       background: #eef8f5;
       color: #174a43;
-      padding: 10px 12px;
+      padding: 6px 9px;
       min-width: 0;
+      min-height: 46px;
     }}
     .health-item.warn {{
       border-color: #e5c486;
@@ -611,25 +622,55 @@ def build_html(data: Dict[str, object]) -> str:
     }}
     .health-item span {{
       display: block;
-      font-size: 11px;
+      font-size: 10px;
       font-weight: 800;
       color: inherit;
       opacity: .78;
     }}
     .health-item strong {{
       display: block;
-      margin-top: 3px;
-      font-size: 16px;
-      line-height: 1.2;
-      overflow-wrap: anywhere;
+      margin-top: 1px;
+      font-size: 13px;
+      line-height: 1.15;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }}
     .health-item small {{
       display: block;
-      margin-top: 4px;
-      font-size: 11px;
-      line-height: 1.35;
+      margin-top: 1px;
+      font-size: 10px;
+      line-height: 1.2;
       color: inherit;
       opacity: .82;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .health-item.compact-action {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-rows: auto auto;
+      column-gap: 8px;
+      row-gap: 2px;
+      align-items: center;
+    }}
+    .health-item.compact-action strong {{
+      grid-column: 1;
+      grid-row: 2;
+      font-size: 12px;
+    }}
+    .health-item.compact-action span {{
+      grid-column: 1;
+      grid-row: 1;
+    }}
+    .health-item.compact-action small {{
+      display: none;
+    }}
+    .health-item.compact-action .maintenance-actions {{
+      grid-column: 2;
+      grid-row: 1 / span 2;
+      margin-top: 0;
     }}
     .risk-alerts {{
       display: none;
@@ -787,16 +828,20 @@ def build_html(data: Dict[str, object]) -> str:
       background: #fff4d6;
       color: #7a4a05;
     }}
-    .funnel {{
+    .overview-grid {{
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 8px;
+      grid-template-columns: repeat(10, minmax(0, 1fr));
+      gap: 6px;
       margin-bottom: 12px;
+    }}
+    .funnel,
+    .metrics {{
+      display: contents;
     }}
     .funnel-step {{
       position: relative;
-      min-height: 64px;
-      padding: 10px 12px;
+      min-height: 52px;
+      padding: 7px 8px;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--panel);
@@ -824,32 +869,26 @@ def build_html(data: Dict[str, object]) -> str:
     .funnel-step strong {{
       display: block;
       margin-top: 3px;
-      font-size: 22px;
+      font-size: 18px;
       line-height: 1.1;
     }}
     .funnel-step small {{
       display: block;
-      margin-top: 4px;
+      margin-top: 3px;
       color: var(--muted);
-      font-size: 11px;
-      line-height: 1.3;
+      font-size: 10px;
+      line-height: 1.2;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-    }}
-    .metrics {{
-      display: grid;
-      grid-template-columns: repeat(7, minmax(0, 1fr));
-      gap: 8px;
-      margin-bottom: 14px;
     }}
     .metric {{
       position: relative;
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
-      padding: 9px 10px;
-      min-height: 58px;
+      padding: 7px 8px;
+      min-height: 52px;
       box-shadow: var(--shadow);
       overflow: hidden;
     }}
@@ -876,18 +915,18 @@ def build_html(data: Dict[str, object]) -> str:
     .metric strong {{
       margin-top: 3px;
       display: block;
-      font-size: clamp(18px, 1.25vw, 24px);
+      font-size: clamp(16px, 1vw, 20px);
       line-height: 1.12;
       overflow-wrap: anywhere;
       word-break: break-word;
       letter-spacing: 0;
     }}
     .metric.long strong {{
-      font-size: clamp(15px, 1vw, 20px);
+      font-size: clamp(14px, .9vw, 18px);
       line-height: 1.16;
     }}
     .metric.small strong {{
-      font-size: clamp(13px, .9vw, 17px);
+      font-size: clamp(12px, .8vw, 16px);
       line-height: 1.18;
     }}
     .metric.a strong {{ color: var(--red); }}
@@ -1446,11 +1485,13 @@ def build_html(data: Dict[str, object]) -> str:
     .detail-page {{
       position: fixed;
       inset: 0;
+      width: 100vw;
       z-index: 50;
       display: none;
       background: var(--bg);
       color: var(--ink);
       overflow: auto;
+      overflow-x: hidden;
     }}
     .detail-page.show {{
       display: block;
@@ -1491,6 +1532,7 @@ def build_html(data: Dict[str, object]) -> str:
       max-width: 980px;
       margin: 0 auto;
       padding: 14px 12px 36px;
+      min-width: 0;
     }}
     .detail-card {{
       border: 1px solid var(--line);
@@ -1499,6 +1541,8 @@ def build_html(data: Dict[str, object]) -> str:
       box-shadow: var(--shadow);
       padding: 12px;
       margin-bottom: 12px;
+      min-width: 0;
+      max-width: 100%;
     }}
     .detail-card h3 {{
       margin: 0 0 8px;
@@ -1551,6 +1595,7 @@ def build_html(data: Dict[str, object]) -> str:
     .paper-ledger-grid {{
       display: grid;
       gap: 12px;
+      min-width: 0;
     }}
     .paper-filter-bar {{
       display: grid;
@@ -1605,10 +1650,198 @@ def build_html(data: Dict[str, object]) -> str:
     .paper-summary-item.loss strong, .loss-text {{
       color: var(--green);
     }}
+    .paper-broker-card {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }}
+    .paper-broker-account {{
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+      font-weight: 800;
+    }}
+    .paper-broker-account span {{
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }}
+    .paper-position-ratio {{
+      border-radius: 6px;
+      background: #f3f4f6;
+      color: #64748b;
+      padding: 4px 7px;
+      white-space: nowrap;
+    }}
+    .paper-broker-assets {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0;
+      padding: 14px;
+      border-bottom: 8px solid #f1f5f9;
+    }}
+    .paper-broker-asset {{
+      min-width: 0;
+      padding: 8px 10px;
+    }}
+    .paper-broker-asset span {{
+      display: block;
+      color: #8a95a3;
+      font-size: 13px;
+      line-height: 1.25;
+    }}
+    .paper-broker-asset strong {{
+      display: block;
+      margin-top: 6px;
+      color: #202936;
+      font-size: 21px;
+      line-height: 1.1;
+      letter-spacing: 0;
+      overflow-wrap: anywhere;
+    }}
+    .paper-broker-asset em {{
+      margin-left: 4px;
+      font-style: normal;
+      font-size: 14px;
+      font-weight: 800;
+    }}
+    .paper-holdings-head {{
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      padding: 14px 14px 10px;
+    }}
+    .paper-holdings-head h3 {{
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.2;
+    }}
+    .paper-holding-table {{
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 13px;
+    }}
+    .paper-holding-table th {{
+      padding: 8px 10px;
+      color: #9aa3af;
+      font-weight: 800;
+      text-align: right;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }}
+    .paper-holding-table th:first-child, .paper-holding-table td:first-child {{
+      text-align: left;
+    }}
+    .paper-holding-table td {{
+      padding: 12px 10px;
+      border-bottom: 1px solid #eef2f7;
+      text-align: right;
+      vertical-align: top;
+      color: var(--red);
+      font-weight: 800;
+      line-height: 1.35;
+    }}
+    .paper-holding-table .stock-name {{
+      display: block;
+      font-size: 16px;
+      color: inherit;
+    }}
+    .paper-holding-table .sub-line {{
+      display: block;
+      margin-top: 4px;
+      font-size: 12px;
+      font-weight: 700;
+      color: inherit;
+    }}
+    .paper-holding-table .neutral {{
+      color: #344054;
+    }}
+    .paper-holding-table tr.loss td {{
+      color: var(--green);
+    }}
+    .paper-holding-table tr.loss .neutral {{
+      color: #344054;
+    }}
+    .paper-holding-mobile {{
+      display: none;
+    }}
+    .paper-holding-card {{
+      border-top: 1px solid #eef2f7;
+      padding: 12px 10px;
+    }}
+    .paper-holding-card.loss {{
+      color: var(--green);
+    }}
+    .paper-holding-main {{
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: start;
+    }}
+    .paper-holding-name {{
+      display: block;
+      color: inherit;
+      font-size: 16px;
+      font-weight: 900;
+      line-height: 1.25;
+    }}
+    .paper-holding-code {{
+      display: block;
+      margin-top: 4px;
+      color: inherit;
+      font-size: 12px;
+      font-weight: 800;
+    }}
+    .paper-holding-pnl {{
+      color: inherit;
+      text-align: right;
+      font-weight: 900;
+    }}
+    .paper-holding-pnl span {{
+      display: block;
+      margin-top: 3px;
+      font-size: 12px;
+    }}
+    .paper-holding-meta {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+      color: #344054;
+    }}
+    .paper-holding-meta span {{
+      display: block;
+      color: #8a95a3;
+      font-size: 11px;
+      font-weight: 700;
+    }}
+    .paper-holding-meta strong {{
+      display: block;
+      margin-top: 3px;
+      font-size: 13px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }}
+    .paper-empty-holding {{
+      padding: 18px 14px;
+      color: var(--muted);
+      border-top: 1px solid var(--line);
+    }}
     .paper-table-wrap {{
       overflow: auto;
       border: 1px solid var(--line);
       border-radius: 8px;
+      max-width: 100%;
+      -webkit-overflow-scrolling: touch;
     }}
     .paper-table {{
       width: 100%;
@@ -1639,6 +1872,76 @@ def build_html(data: Dict[str, object]) -> str:
       max-width: 280px;
       white-space: normal;
       color: var(--muted);
+      line-height: 1.35;
+    }}
+    .paper-ledger-mobile,
+    .paper-stock-summary-mobile {{
+      display: none;
+    }}
+    .paper-ledger-card,
+    .paper-stock-card {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 10px;
+      min-width: 0;
+    }}
+    .paper-ledger-card + .paper-ledger-card,
+    .paper-stock-card + .paper-stock-card {{
+      margin-top: 8px;
+    }}
+    .paper-ledger-card-head,
+    .paper-stock-card-head {{
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: flex-start;
+    }}
+    .paper-ledger-card strong,
+    .paper-stock-card strong {{
+      display: block;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }}
+    .paper-ledger-card .sub-line,
+    .paper-stock-card .sub-line {{
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.25;
+    }}
+    .paper-ledger-card-pnl,
+    .paper-stock-card-pnl {{
+      text-align: right;
+      white-space: nowrap;
+      font-weight: 900;
+    }}
+    .paper-ledger-card-grid,
+    .paper-stock-card-grid {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 8px;
+      color: #344054;
+    }}
+    .paper-ledger-card-grid span,
+    .paper-stock-card-grid span {{
+      display: block;
+      color: #8a95a3;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.2;
+    }}
+    .paper-ledger-card-grid strong,
+    .paper-stock-card-grid strong {{
+      margin-top: 2px;
+      font-size: 12px;
+    }}
+    .paper-ledger-card-note {{
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 11px;
       line-height: 1.35;
     }}
     .action-badge {{
@@ -1754,6 +2057,9 @@ def build_html(data: Dict[str, object]) -> str:
     body.detail-open {{
       overflow: hidden;
     }}
+    body.detail-open .shell {{
+      display: none;
+    }}
     .workflow-step {{
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -1826,17 +2132,19 @@ def build_html(data: Dict[str, object]) -> str:
       color: var(--muted);
       text-align: center;
     }}
+    @media (max-width: 1180px) {{
+      .overview-grid {{ grid-template-columns: repeat(5, minmax(0, 1fr)); }}
+    }}
     @media (max-width: 980px) {{
       .topbar-inner {{ grid-template-columns: 1fr; align-items: start; }}
-      .funnel {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-      .metrics {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+      .overview-grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
       .point-grid {{ grid-template-columns: 1fr; }}
       .workflow-grid {{ grid-template-columns: 1fr; }}
       .board-tools {{ grid-template-columns: 1fr; }}
       .cards {{ grid-template-columns: 1fr; }}
       .paper-hero .paper-metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .focus-price-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-      .system-health {{ grid-template-columns: 1fr; }}
+      .system-health {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .paper-filter-bar {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
       .paper-summary-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .detail-row {{ grid-template-columns: 1fr; }}
@@ -1847,8 +2155,21 @@ def build_html(data: Dict[str, object]) -> str:
       .topbar-inner {{ padding: 18px 12px; }}
       h1 {{ font-size: 24px; }}
       .top-actions {{ justify-content: flex-start; }}
-      .funnel {{ grid-template-columns: 1fr; }}
-      .metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .status-pill {{ height: auto; min-height: 36px; padding: 8px 10px; white-space: normal; align-items: flex-start; }}
+      .status-pill span:last-child {{ min-width: 0; overflow-wrap: anywhere; }}
+      .detail-topbar-inner {{ padding: 10px 8px; }}
+      .detail-topbar h2 {{ font-size: 17px; }}
+      .detail-content {{ width: 100%; max-width: 100%; padding: 10px 8px 28px; overflow-x: hidden; }}
+      .detail-card {{ width: 100%; max-width: 100%; padding: 10px; margin-bottom: 10px; overflow: hidden; }}
+      .detail-card h3 {{ font-size: 15px; margin-bottom: 7px; }}
+      .overview-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }}
+      .funnel-step {{ min-height: 56px; padding: 8px 9px; }}
+      .funnel-step strong {{ font-size: 19px; }}
+      .metric {{ min-height: 52px; padding: 8px 9px; }}
+      .metric strong {{ font-size: 18px; }}
+      .metric.long strong, .metric.small strong {{ font-size: 15px; }}
+      .system-health {{ grid-template-columns: 1fr; gap: 5px; }}
+      .health-item {{ min-height: 0; }}
       .paper-hero-head {{ display: block; }}
       .paper-hero-head span {{ display: block; margin-top: 4px; text-align: left; }}
       .focus-realtime-head {{ display: block; }}
@@ -1856,12 +2177,86 @@ def build_html(data: Dict[str, object]) -> str:
       .focus-price-grid {{ grid-template-columns: 1fr; }}
       .paper-hero .paper-metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .paper-metric strong {{ font-size: 14px; }}
-      .paper-filter-bar {{ grid-template-columns: 1fr; }}
+      .paper-broker-assets {{ grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 10px; }}
+      .paper-broker-asset {{ padding: 8px 6px; }}
+      .paper-broker-asset strong {{ font-size: 18px; }}
+      .paper-ledger-grid,
+      .paper-broker-card,
+      .paper-broker-account,
+      .paper-broker-assets,
+      .paper-holdings-head,
+      .paper-holding-mobile,
+      .paper-holding-card {{
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        box-sizing: border-box;
+      }}
+      .paper-broker-card {{
+        width: calc(100vw - 24px) !important;
+        max-width: calc(100vw - 24px) !important;
+      }}
+      .paper-broker-card {{ overflow-x: hidden; }}
+      .paper-holdings-head {{
+        display: block;
+      }}
+      .paper-holdings-head .muted {{
+        display: block;
+        margin-top: 6px;
+        text-align: left;
+        font-size: 12px;
+      }}
+      .paper-holding-table {{ display: none; }}
+      .paper-holding-mobile {{ display: block; }}
+      .paper-filter-bar {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }}
+      .paper-filter-bar label {{ font-size: 11px; gap: 3px; }}
+      .paper-filter-bar input, .paper-filter-bar select {{ height: 34px; padding: 0 8px; font-size: 12px; }}
       .paper-summary-grid {{ grid-template-columns: 1fr; }}
-      .calendar-grid {{ gap: 4px; }}
-      .calendar-toolbar {{ align-items: stretch; }}
-      .calendar-toolbar label, .calendar-toolbar input {{ width: 100%; }}
-      .calendar-day {{ min-height: 58px; padding: 5px; }}
+      .calendar-toolbar {{ align-items: stretch; gap: 6px; margin: 2px 0 8px; }}
+      .calendar-toolbar label {{ width: 100%; font-size: 11px; }}
+      .calendar-toolbar input {{ width: 100%; min-width: 0; height: 34px; padding: 0 8px; font-size: 12px; }}
+      .calendar-legend {{ font-size: 11px; line-height: 1.25; }}
+      .calendar-grid {{ gap: 3px; }}
+      .calendar-head {{ font-size: 11px; }}
+      .calendar-day {{ min-height: 44px; padding: 4px 2px; border-radius: 6px; justify-items: center; gap: 1px; }}
+      .calendar-day strong {{ font-size: 12px; line-height: 1.05; }}
+      .calendar-day span {{ font-size: 10px; line-height: 1.1; text-align: center; white-space: nowrap; }}
+      .calendar-day em {{ font-size: 9px; line-height: 1.1; text-align: center; white-space: nowrap; }}
+      .paper-table-wrap {{ max-width: 100%; }}
+      .paper-ledger-card,
+      .paper-stock-card {{
+        padding: 8px;
+      }}
+      .paper-ledger-card + .paper-ledger-card,
+      .paper-stock-card + .paper-stock-card {{
+        margin-top: 6px;
+      }}
+      .paper-ledger-card-grid,
+      .paper-stock-card-grid {{
+        gap: 5px;
+        margin-top: 6px;
+      }}
+      .paper-ledger-card-note {{
+        margin-top: 6px;
+        font-size: 10px;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }}
+      .paper-ledger-table,
+      .paper-stock-summary-table {{
+        min-width: 0;
+      }}
+      #paperLedgerTableCard .paper-table-wrap,
+      .paper-stock-summary-wrap {{
+        display: none;
+      }}
+      .paper-ledger-mobile,
+      .paper-stock-summary-mobile {{
+        display: block;
+        margin-top: 8px;
+      }}
       .candidate-head {{ grid-template-columns: 1fr auto; }}
       .pool {{ width: auto; height: 32px; padding: 0 10px; grid-column: 1 / -1; }}
       .change {{ font-size: 20px; }}
@@ -1902,13 +2297,15 @@ def build_html(data: Dict[str, object]) -> str:
       <div class="freshness-banner" id="freshnessBanner"></div>
       <section class="system-health" id="systemHealth"></section>
       <section class="risk-alerts" id="riskAlerts"></section>
+      <section class="overview-grid" id="overviewMetrics">
+        <div class="funnel" id="screeningFunnel"></div>
+        <div class="metrics" id="metrics"></div>
+      </section>
       <section class="focus-realtime" id="focusRealtime"></section>
-      <section class="funnel" id="screeningFunnel"></section>
-      <section class="metrics" id="metrics"></section>
       <section class="paper-hero">
         <div class="paper-hero-head">
           <h2>模拟盘</h2>
-      <span>本金 1,000,000 元 · 重点关注平均买入 · 严格 T+1 · 14:57 尾盘执行</span>
+      <span>本金 1,000,000 元 · 重点关注平均买入 · 严格 T+1 · 14:55 尾盘执行</span>
         </div>
         <div class="paper-panel" id="paperTradingHero"></div>
       </section>
@@ -2004,14 +2401,12 @@ def build_html(data: Dict[str, object]) -> str:
       C: '题材异动记录：命中重点主题，但暂时没有明确策略信号或强度不足，主要用于记录和后续观察。'
     }};
     const metricItems = [
-      {{ label: '交易日', value: data.trade_date || '-' }},
+      {{ label: '覆盖状态', value: data.summary.coverage_status }},
+      {{ label: '股票池缓存', value: data.summary.universe_cache }},
+      {{ label: '推荐阶段', value: data.recommendation_phase?.label || '-' }},
       {{ label: '重点关注', value: data.summary.a_pool, tone: 'a', pool: 'A' }},
       {{ label: '观察候补', value: data.summary.b_pool, tone: 'b', pool: 'B' }},
-      {{ label: '题材异动记录', value: data.summary.c_pool, tone: 'c', pool: 'C' }},
-      {{ label: '推荐阶段', value: data.recommendation_phase?.label || '-' }},
-      {{ label: '股票池缓存', value: data.summary.universe_cache }},
-      {{ label: '覆盖状态', value: data.summary.coverage_status }},
-      {{ label: '已剔除', value: data.summary.excluded }}
+      {{ label: '题材异动记录', value: data.summary.c_pool, tone: 'c', pool: 'C' }}
     ];
 
     function escapeHtml(value) {{
@@ -2700,14 +3095,19 @@ def build_html(data: Dict[str, object]) -> str:
     }}
 
     function healthTone(status) {{
-      if (status === '采集异常' || status === '日期异常' || status === '可能过期' || status === '无数据日期') return 'danger';
-      if (status === '采集不足' || status === '上一自然日数据') return 'warn';
+      if (status === '采集异常' || status === '日期异常' || status === '可能过期' || status === '无数据日期' || status === '闸门关闭' || status === '快照过旧') return 'danger';
+      if (status === '采集不足' || status === '上一自然日数据' || status === '窗口已关闭' || status === '无A池') return 'warn';
       return '';
     }}
 
     function renderSystemHealth() {{
       const summary = data.summary || {{}};
       const phase = data.recommendation_phase || {{}};
+      const paper = data.paper_trading || {{}};
+      const perf = paper.performance || {{}};
+      const gate = paper.trade_gate || perf.trade_gate || {{}};
+      const gateStatus = gate.status || (gate.snapshot_ok ? '快照可用' : '未生成');
+      const gateNote = gate.message || (gate.snapshot_latest_at ? `快照时间：${{gate.snapshot_latest_at}}` : '等待模拟盘刷新生成');
       const items = [
         {{
           label: '原始采集',
@@ -2720,6 +3120,12 @@ def build_html(data: Dict[str, object]) -> str:
           value: `${{data.trade_date || '-'}} · ${{data.freshness_status || '-'}}`,
           note: data.freshness_note || '-',
           tone: healthTone(data.freshness_status)
+        }},
+        {{
+          label: '交易闸门',
+          value: gateStatus,
+          note: gateNote,
+          tone: healthTone(gateStatus)
         }},
         {{
           label: '自动刷新节点',
@@ -2736,7 +3142,7 @@ def build_html(data: Dict[str, object]) -> str:
         }}
       ];
       document.getElementById('systemHealth').innerHTML = items.map(item => `
-        <div class="health-item ${{item.tone}}">
+        <div class="health-item ${{item.tone}} ${{item.action ? 'compact-action' : ''}}" title="${{escapeHtml(`${{item.label}}：${{item.value}} ${{item.note}}`)}}">
           <span>${{escapeHtml(item.label)}}</span>
           <strong>${{escapeHtml(item.value)}}</strong>
           <small>${{escapeHtml(item.note)}}</small>
@@ -2795,6 +3201,8 @@ def build_html(data: Dict[str, object]) -> str:
     function renderPaperTrading() {{
       const snapshot = paperSnapshot();
       const perf = snapshot.perf || {{}};
+      const paper = data.paper_trading || {{}};
+      const gate = paper.trade_gate || perf.trade_gate || {{}};
       const positions = snapshot.positions || [];
       const boxes = [document.getElementById('paperTradingHero')].filter(Boolean);
       if (!Object.keys(perf).length) {{
@@ -2814,7 +3222,7 @@ def build_html(data: Dict[str, object]) -> str:
         <div class="paper-metrics">
           ${{metrics.map(([label, value, tone]) => `<div class="paper-metric ${{tone || ''}}"><span>${{escapeHtml(label)}}</span><strong>${{escapeHtml(value)}}</strong></div>`).join('')}}
         </div>
-        <div class="paper-note">持仓 ${{positions.length}} 只 · 今日交易 ${{(snapshot.ledger || []).filter(row => row.trade_date === data.trade_date).length}} 笔 · ${{escapeHtml(perf.note || '实时模拟盘运行中')}}</div>
+        <div class="paper-note">持仓 ${{positions.length}} 只 · 今日交易 ${{(snapshot.ledger || []).filter(row => row.trade_date === data.trade_date).length}} 笔 · ${{escapeHtml(gate.message || perf.note || '实时模拟盘运行中')}}</div>
         <div class="paper-actions">
           <button class="paper-detail-button" type="button" data-paper-detail="account">查看模拟交易账本</button>
         </div>
@@ -2871,7 +3279,7 @@ def build_html(data: Dict[str, object]) -> str:
       const note = String(row.note || '');
       const found = note.match(/(\\d{{1,2}}:\\d{{2}})/);
       if (found) return found[1].padStart(5, '0');
-      return row.action === 'BUY' ? '14:57' : '-';
+      return row.action === 'BUY' ? '14:55' : '未记录';
     }}
 
     function paperPnlAmount(row) {{
@@ -2986,8 +3394,8 @@ def build_html(data: Dict[str, object]) -> str:
       const rows = Array.from(map.values()).sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl));
       if (!rows.length) return '<div class="paper-note">暂无股票汇总。</div>';
       return `
-        <div class="paper-table-wrap">
-          <table class="paper-table">
+        <div class="paper-table-wrap paper-stock-summary-wrap">
+          <table class="paper-table paper-stock-summary-table">
             <thead><tr><th>股票</th><th>买入</th><th>卖出</th><th>累计成交</th><th>已实现盈亏</th></tr></thead>
             <tbody>
               ${{rows.map(row => `
@@ -3001,6 +3409,24 @@ def build_html(data: Dict[str, object]) -> str:
               `).join('')}}
             </tbody>
           </table>
+        </div>
+        <div class="paper-stock-summary-mobile">
+          ${{rows.map(row => `
+            <div class="paper-stock-card">
+              <div class="paper-stock-card-head">
+                <div>
+                  <strong>${{escapeHtml(row.code)}} ${{escapeHtml(row.name)}}</strong>
+                  <span class="sub-line">买入 ${{row.buys}} 笔 · 卖出 ${{row.sells}} 笔</span>
+                </div>
+                <div class="paper-stock-card-pnl ${{pnlTone(row.pnl)}}-text">${{signedMoney(row.pnl)}}</div>
+              </div>
+              <div class="paper-stock-card-grid">
+                <div><span>累计成交</span><strong>${{money(row.amount)}}</strong></div>
+                <div><span>买入</span><strong>${{row.buys}}</strong></div>
+                <div><span>卖出</span><strong>${{row.sells}}</strong></div>
+              </div>
+            </div>
+          `).join('')}}
         </div>
       `;
     }}
@@ -3018,6 +3444,7 @@ def build_html(data: Dict[str, object]) -> str:
         sort: document.getElementById('paperSort'),
         calendarMonth: document.getElementById('paperCalendarMonth')
       }};
+      const mobileBody = document.getElementById('paperLedgerMobileRows');
       const calendarBody = document.getElementById('paperCalendarBody');
       const renderCalendar = () => {{
         if (!calendarBody || !controls.calendarMonth) return;
@@ -3045,7 +3472,7 @@ def build_html(data: Dict[str, object]) -> str:
           if (controls.sort.value === 'amount_desc') return numberValue(b.amount) - numberValue(a.amount);
           return `${{b.trade_date || ''}} ${{tradeTime(b)}}`.localeCompare(`${{a.trade_date || ''}} ${{tradeTime(a)}}`);
         }});
-        tableBody.innerHTML = rows.length ? rows.map(row => {{
+        const rowHtml = rows.length ? rows.map(row => {{
           const pnl = paperPnlAmount(row);
           const actionLabel = row.action === 'SELL' ? '卖出' : '买入';
           const actionClass = row.action === 'SELL' ? 'sell' : 'buy';
@@ -3068,6 +3495,38 @@ def build_html(data: Dict[str, object]) -> str:
             </tr>
           `;
         }}).join('') : '<tr><td colspan="11">没有符合条件的交易记录。</td></tr>';
+        const mobileHtml = rows.length ? rows.map(row => {{
+          const pnl = paperPnlAmount(row);
+          const actionLabel = row.action === 'SELL' ? '卖出' : '买入';
+          const actionClass = row.action === 'SELL' ? 'sell' : 'buy';
+          const sellSignal = row.action === 'SELL'
+            ? `${{escapeHtml(row.sell_signal || '-')}}${{row.sell_pressure_score ? ` · ${{escapeHtml(row.sell_pressure_score)}}/100` : ''}}${{row.volume_ratio ? ` · 量比${{escapeHtml(row.volume_ratio)}} 换手${{escapeHtml(row.turnover_rate || '-')}}%` : ''}}`
+            : '';
+          return `
+            <div class="paper-ledger-card">
+              <div class="paper-ledger-card-head">
+                <div>
+                  <span class="action-badge ${{actionClass}}">${{actionLabel}}</span>
+                  <strong style="margin-top:6px">${{escapeHtml(row.stock_code || '-')}} ${{escapeHtml(row.stock_name || '')}}</strong>
+                  <span class="sub-line">${{escapeHtml(row.trade_date || '-')}} · ${{escapeHtml(tradeTime(row))}}</span>
+                </div>
+                <div class="paper-ledger-card-pnl ${{pnlTone(pnl)}}-text">
+                  ${{signedMoney(pnl)}}
+                  <span class="sub-line ${{pnlTone(pnl)}}-text">${{pct(paperPnlPct(row))}}</span>
+                </div>
+              </div>
+              <div class="paper-ledger-card-grid">
+                <div><span>价格</span><strong>${{escapeHtml(row.price || '-')}}</strong></div>
+                <div><span>数量</span><strong>${{escapeHtml(row.shares || '-')}}</strong></div>
+                <div><span>成交额</span><strong>${{money(row.amount)}}</strong></div>
+              </div>
+              ${{sellSignal ? `<div class="paper-ledger-card-note">卖出判断：${{sellSignal}}</div>` : ''}}
+              <div class="paper-ledger-card-note">${{escapeHtml(row.note || '-')}}</div>
+            </div>
+          `;
+        }}).join('') : '<div class="paper-note">没有符合条件的交易记录。</div>';
+        tableBody.innerHTML = rowHtml;
+        if (mobileBody) mobileBody.innerHTML = mobileHtml;
       }};
       Object.entries(controls).forEach(([key, control]) => {{
         if (!control || key === 'calendarMonth') return;
@@ -3129,38 +3588,102 @@ def build_html(data: Dict[str, object]) -> str:
       const winRate = sellRows.length ? wins / sellRows.length * 100 : 0;
       const biggestWin = sellRows.reduce((max, row) => Math.max(max, numberValue(row.pnl_amount)), 0);
       const biggestLoss = sellRows.reduce((min, row) => Math.min(min, numberValue(row.pnl_amount)), 0);
+      const equity = numberValue(perf.equity);
+      const marketValue = numberValue(perf.market_value);
+      const cash = numberValue(perf.cash);
+      const positionRatio = equity ? marketValue / equity * 100 : 0;
+      const todaySellPnl = ledger
+        .filter(row => row.trade_date === data.trade_date && row.action === 'SELL')
+        .reduce((sum, row) => sum + numberValue(row.pnl_amount), 0);
+      const todayReferencePnl = todaySellPnl + numberValue(perf.unrealized_pnl);
       const dates = Array.from(new Set(ledger.map(row => row.trade_date).filter(Boolean))).sort();
       const earliest = dates[0] || '';
       const latest = dates[dates.length - 1] || '';
-      const positionRows = positions.length
+      const holdingRows = positions.length
         ? positions.map(row => {{
             const pnl = numberValue(row.unrealized_pnl);
+            const value = numberValue(row.market_value);
+            const shares = numberValue(row.shares);
+            const entry = numberValue(row.entry_price);
+            const current = numberValue(row.current_price);
             return `
-              <div class="detail-row ${{pnl < 0 ? 'weak' : ''}}">
-                <div>
-                  <strong>${{escapeHtml(row.stock_code)}} ${{escapeHtml(row.stock_name)}}</strong>
-                  <span>${{escapeHtml(row.shares)}} 股 · 买入 ${{escapeHtml(row.entry_price)}} · 最新 ${{money(row.current_price)}} · 市值 ${{money(row.market_value)}} · ${{escapeHtml(row.live_status || '持仓观察中')}}</span>
+              <tr class="${{pnl < 0 ? 'loss' : ''}}">
+                <td>
+                  <span class="stock-name">${{escapeHtml(row.stock_name || '-')}}</span>
+                  <span class="sub-line">${{escapeHtml(row.stock_code || '')}} · ${{money(value)}}</span>
+                </td>
+                <td>
+                  ${{signedMoney(pnl)}}
+                  <span class="sub-line">${{pct(row.unrealized_return_pct)}}</span>
+                </td>
+                <td>
+                  ${{shares.toLocaleString('zh-CN')}}
+                  <span class="sub-line neutral">${{shares.toLocaleString('zh-CN')}}</span>
+                </td>
+                <td>
+                  ${{entry.toFixed(3)}}
+                  <span class="sub-line">${{current.toFixed(3)}}</span>
+                </td>
+              </tr>
+            `;
+          }}).join('')
+        : '';
+      const holdingMobileRows = positions.length
+        ? positions.map(row => {{
+            const pnl = numberValue(row.unrealized_pnl);
+            const value = numberValue(row.market_value);
+            const shares = numberValue(row.shares);
+            const entry = numberValue(row.entry_price);
+            const current = numberValue(row.current_price);
+            return `
+              <div class="paper-holding-card ${{pnl < 0 ? 'loss' : ''}}">
+                <div class="paper-holding-main">
+                  <div>
+                    <span class="paper-holding-name">${{escapeHtml(row.stock_name || '-')}}</span>
+                    <span class="paper-holding-code">${{escapeHtml(row.stock_code || '')}} · ${{money(value)}}</span>
+                  </div>
+                  <div class="paper-holding-pnl">
+                    ${{signedMoney(pnl)}}
+                    <span>${{pct(row.unrealized_return_pct)}}</span>
+                  </div>
                 </div>
-                <em>${{pnl >= 0 ? '+' : ''}}${{money(pnl)}} / ${{pct(row.unrealized_return_pct)}}</em>
+                <div class="paper-holding-meta">
+                  <div><span>持仓/可用</span><strong>${{shares.toLocaleString('zh-CN')}} / ${{shares.toLocaleString('zh-CN')}}</strong></div>
+                  <div><span>成本</span><strong>${{entry.toFixed(3)}}</strong></div>
+                  <div><span>现价</span><strong>${{current.toFixed(3)}}</strong></div>
+                </div>
               </div>
             `;
           }}).join('')
-        : '<div class="paper-note">当前空仓。未到尾盘窗口或当天没有重点关注时不会建仓。</div>';
+        : '';
       openDetailPage('模拟交易账本', `
         <div class="paper-ledger-grid">
-          <div class="detail-card">
-            <h3>账户总览</h3>
-            <div class="paper-summary-grid">
-              <div class="paper-summary-item"><span>当前权益</span><strong>${{money(perf.equity)}}</strong></div>
-              <div class="paper-summary-item"><span>现金 / 持仓市值</span><strong>${{money(perf.cash)}} / ${{money(perf.market_value)}}</strong></div>
-              <div class="paper-summary-item ${{pnlTone(perf.cumulative_pnl)}}"><span>累计盈亏</span><strong>${{signedMoney(perf.cumulative_pnl)}} / ${{pct(perf.cumulative_return_pct)}}</strong></div>
-              <div class="paper-summary-item ${{pnlTone(perf.unrealized_pnl)}}"><span>浮动盈亏</span><strong>${{signedMoney(perf.unrealized_pnl)}}</strong></div>
-              <div class="paper-summary-item ${{pnlTone(realized)}}"><span>已实现盈亏</span><strong>${{signedMoney(realized)}}</strong></div>
-              <div class="paper-summary-item"><span>交易笔数</span><strong>${{ledger.length}} 笔</strong></div>
-              <div class="paper-summary-item"><span>卖出胜率</span><strong>${{pct(winRate)}}</strong></div>
-              <div class="paper-summary-item"><span>最大单笔盈亏</span><strong><span class="profit-text">${{signedMoney(biggestWin)}}</span> / <span class="loss-text">${{signedMoney(biggestLoss)}}</span></strong></div>
+          <div class="paper-broker-card">
+            <div class="paper-broker-account">
+              <div>人民币账户A股 <span>模拟盘</span></div>
+              <span class="paper-position-ratio">仓位 ${{positionRatio.toFixed(1)}}%</span>
             </div>
-            <p>更新时间：${{escapeHtml(perf.last_updated || data.generated_at || '-')}}</p>
+            <div class="paper-broker-assets">
+              <div class="paper-broker-asset"><span>总资产</span><strong>${{money(equity)}}</strong></div>
+              <div class="paper-broker-asset ${{pnlTone(perf.unrealized_pnl)}}"><span>浮动盈亏</span><strong class="${{pnlTone(perf.unrealized_pnl)}}-text">${{signedMoney(perf.unrealized_pnl)}}</strong></div>
+              <div class="paper-broker-asset ${{pnlTone(todayReferencePnl)}}"><span>当日参考盈亏</span><strong class="${{pnlTone(todayReferencePnl)}}-text">${{signedMoney(todayReferencePnl)}} <em>${{pct(equity ? todayReferencePnl / equity * 100 : 0)}}</em></strong></div>
+              <div class="paper-broker-asset"><span>总市值</span><strong>${{money(marketValue)}}</strong></div>
+              <div class="paper-broker-asset"><span>可用</span><strong>${{money(cash)}}</strong></div>
+              <div class="paper-broker-asset"><span>累计盈亏</span><strong class="${{pnlTone(perf.cumulative_pnl)}}-text">${{signedMoney(perf.cumulative_pnl)}} <em>${{pct(perf.cumulative_return_pct)}}</em></strong></div>
+            </div>
+            <div class="paper-holdings-head">
+              <h3>持仓股</h3>
+              <span class="paper-note">交易 ${{ledger.length}} 笔 · 胜率 ${{pct(winRate)}} · 更新 ${{escapeHtml(perf.last_updated || data.generated_at || '-')}}</span>
+            </div>
+            ${{positions.length ? `
+              <table class="paper-holding-table">
+                <thead>
+                  <tr><th>市值</th><th>盈亏</th><th>持仓/可用</th><th>成本/现价</th></tr>
+                </thead>
+                <tbody>${{holdingRows}}</tbody>
+              </table>
+              <div class="paper-holding-mobile">${{holdingMobileRows}}</div>
+            ` : '<div class="paper-empty-holding">当前空仓。14:50 生成第一版推荐，14:55 用最新行情校验后才会按最终推荐建仓。</div>'}}
           </div>
           <div class="detail-card">
             <h3>月度盈亏日历</h3>
@@ -3181,15 +3704,15 @@ def build_html(data: Dict[str, object]) -> str:
               <label>排序<select id="paperSort"><option value="time_desc">时间最新</option><option value="pnl_desc">利润值高到低</option><option value="pnl_asc">利润值低到高</option><option value="pct_desc">利润率高到低</option><option value="pct_asc">利润率低到高</option><option value="amount_desc">成交额高到低</option></select></label>
             </div>
             <div class="paper-table-wrap" style="margin-top:10px">
-              <table class="paper-table">
+              <table class="paper-table paper-ledger-table">
                 <thead>
                   <tr><th>日期</th><th>时间</th><th>方向</th><th>股票</th><th>价格</th><th>数量</th><th>成交额</th><th>利润值</th><th>利润率</th><th>卖出判断</th><th>说明</th></tr>
                 </thead>
                 <tbody id="paperLedgerRows"></tbody>
               </table>
             </div>
+            <div class="paper-ledger-mobile" id="paperLedgerMobileRows"></div>
           </div>
-          <div class="detail-card"><h3>当前持仓</h3><div class="detail-list">${{positionRows}}</div></div>
           <div class="detail-card"><h3>按股票汇总</h3>${{paperStockSummary(ledger)}}</div>
         </div>
       `);

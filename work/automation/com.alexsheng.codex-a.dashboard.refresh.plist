@@ -7,7 +7,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
-    <string>/Users/alexsheng/Documents/A股短线助手/work/automation/refresh_dashboard_once.sh</string>
+    <string>/Users/alexsheng/Library/Application Support/CodexA/refresh_dashboard_once.sh</string>
   </array>
   <key>StartCalendarInterval</key>
   <array>
@@ -68,10 +68,10 @@
     <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>10</integer></dict>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/alexsheng/Documents/A股短线助手</string>
+  <string>/Users/alexsheng/Library/Application Support/CodexA/runtime_project</string>
   <key>StandardOutPath</key>
-  <string>/Users/alexsheng/Documents/A股短线助手/work/logs/dashboard_refresh.out.log</string>
+  <string>/Users/alexsheng/Library/Logs/CodexA/dashboard_refresh.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/alexsheng/Documents/A股短线助手/work/logs/dashboard_refresh.err.log</string>
+  <string>/Users/alexsheng/Library/Logs/CodexA/dashboard_refresh.err.log</string>
 </dict>
 </plist>

@@ -511,13 +511,17 @@ def build_html(data: Dict[str, object]) -> str:
     }}
     .refresh-button {{
       height: 40px;
-      border: 1px solid rgba(255,255,255,.22);
+      border: 1px solid #c9d6e4;
       border-radius: 8px;
       padding: 0 14px;
-      color: #fff;
-      background: #c93434;
+      color: #23405f;
+      background: #f6f9fc;
       cursor: pointer;
       font-weight: 700;
+    }}
+    .refresh-button:hover {{
+      border-color: #8db2d8;
+      background: #eaf4ff;
     }}
     .refresh-button:disabled {{
       opacity: .7;
@@ -528,6 +532,17 @@ def build_html(data: Dict[str, object]) -> str:
       color: #c7d0dc;
       font-size: 13px;
       text-align: right;
+    }}
+    .maintenance-actions {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 8px;
+    }}
+    .maintenance-actions .refresh-state {{
+      min-width: auto;
+      color: #66768a;
+      text-align: left;
     }}
     .status-dot {{
       width: 10px;
@@ -1878,8 +1893,6 @@ def build_html(data: Dict[str, object]) -> str:
         </div>
         <div class="top-actions">
           <div class="status-pill"><span class="status-dot"></span><span id="marketState"></span></div>
-          <button class="refresh-button" id="refreshData" type="button">刷新数据</button>
-          <div class="refresh-state" id="refreshState"></div>
         </div>
       </div>
     </header>
@@ -2713,6 +2726,13 @@ def build_html(data: Dict[str, object]) -> str:
           value: (phase.refresh_times || []).join(' / ') || '-',
           note: `当前阶段：${{phase.label || '-'}}`,
           tone: ''
+        }},
+        {{
+          label: '维护操作',
+          value: '手动补采集',
+          note: '自动刷新延迟或数据异常时使用',
+          tone: '',
+          action: true
         }}
       ];
       document.getElementById('systemHealth').innerHTML = items.map(item => `
@@ -2720,6 +2740,7 @@ def build_html(data: Dict[str, object]) -> str:
           <span>${{escapeHtml(item.label)}}</span>
           <strong>${{escapeHtml(item.value)}}</strong>
           <small>${{escapeHtml(item.note)}}</small>
+          ${{item.action ? `<div class="maintenance-actions"><button class="refresh-button" id="refreshData" type="button">重新采集并发布</button><div class="refresh-state" id="refreshState"></div></div>` : ''}}
         </div>
       `).join('');
     }}

@@ -7,6 +7,7 @@ import argparse
 import csv
 import html
 import json
+import os
 from collections import Counter
 from datetime import date, datetime, time
 from pathlib import Path
@@ -25,15 +26,24 @@ PAPER_PERFORMANCE = ROOT / "work" / "paper_trading" / "performance_latest.json"
 PAPER_POSITIONS = ROOT / "work" / "paper_trading" / "positions_latest.csv"
 PAPER_LEDGER = ROOT / "work" / "paper_trading" / "trade_ledger.csv"
 PAPER_TRADE_GATE = ROOT / "work" / "paper_trading" / "trade_gate_latest.json"
+PAPER_BUY_BASIS = ROOT / "work" / "paper_trading" / "buy_basis_latest.csv"
 LATEST_MARKET = ROOT / "01_原始资料" / "market_data" / "raw_csv" / "latest_market_data.csv"
 CLOUD_REFRESH_ENDPOINT = ROOT / "work" / "cloud" / "refresh_endpoint.txt"
 QUOTE_ENDPOINTS = ROOT / "work" / "cloud" / "quote_endpoints.txt"
+LOCAL_SYNC_STATUS = ROOT / "work" / "sync" / "local_snapshot_status.json"
+SERVER_SYNC_STATUS = ROOT / "work" / "sync" / "server_sync_latest.json"
 COVERAGE_BASIC_ROWS = 1500
 COVERAGE_FULL_ROWS = 3000
 RAW_MIN_ROWS = 3000
-REFRESH_TIMES = ["09:32", "10:30", "11:25", "13:30", "14:15", "14:35", "14:45", "14:50", "14:55", "15:10", "16:10"]
+REFRESH_TIMES = ["09:20", "09:24", "09:25", "09:32", "10:30", "11:25", "13:30", "14:15", "14:20", "14:35", "14:45", "14:50", "14:53", "14:54", "14:55", "15:10", "16:10"]
 AUTH_USER = "alexsheng666"
 AUTH_PASSWORD = "MIma666"
+AUTH_ENABLED = os.environ.get("CODEXA_DASHBOARD_AUTH", "").strip() == "1"
+OFFICIAL_DASHBOARD_OUTPUTS = {
+    ROOT / "dashboard" / "index.html",
+    ROOT / "outputs" / "index.html",
+    ROOT / "outputs" / "stock_report.html",
+}
 
 
 def esc(value: object) -> str:
@@ -216,6 +226,69 @@ def freshness_info(trade_date: str) -> Dict[str, object]:
     }
 
 
+def parse_datetime(value: str) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw[:19] if "T" in raw else raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def is_official_dashboard_output(path: Path) -> bool:
+    resolved = path.resolve()
+    return resolved in {item.resolve() for item in OFFICIAL_DASHBOARD_OUTPUTS}
+
+
+def rows_trade_date(rows: Iterable[Dict[str, str]]) -> str:
+    trade_dates = sorted({row.get("trade_date", "").strip() for row in rows if row.get("trade_date")})
+    return trade_dates[-1] if trade_dates else ""
+
+
+def validate_official_dashboard_source(rows: List[Dict[str, str]], source: Path, output: Path) -> None:
+    """Prevent stale candidate snapshots from overwriting the live recommendation board."""
+    if not is_official_dashboard_output(output):
+        return
+    if os.environ.get("CODEXA_ALLOW_STALE_DASHBOARD") == "1":
+        return
+    if not rows:
+        raise SystemExit(f"拒绝生成正式看板：候选文件为空：{source}")
+
+    trade_dates = sorted({row.get("trade_date", "").strip() for row in rows if row.get("trade_date")})
+    if len(trade_dates) != 1:
+        raise SystemExit(f"拒绝生成正式看板：候选文件交易日不唯一：{trade_dates or '-'}")
+
+    trade_date = parse_trade_date(trade_dates[0])
+    today = date.today()
+    if trade_date != today:
+        now = datetime.now()
+        latest_market_trade_date = parse_trade_date(rows_trade_date(read_optional_csv(LATEST_MARKET)))
+        if (now.hour, now.minute) < (14, 50) and latest_market_trade_date == today:
+            # 14:50 前正式 A/B/C 不提前重排。只要原始行情已经是今日数据，就允许看板
+            # 用今日行情刷新持仓风控和交易账本，同时保留上一版候选池作为归档参考。
+            return
+        raise SystemExit(
+            "拒绝生成正式看板：候选文件不是今日数据。"
+            f" input={source} trade_date={trade_dates[0]} today={today.isoformat()}。"
+            " 如需历史复盘，请设置 CODEXA_ALLOW_STALE_DASHBOARD=1 并输出到非正式文件。"
+        )
+
+    captured_values = [row.get("captured_at", "").strip() for row in rows if row.get("captured_at")]
+    captured_times = [item for item in (parse_datetime(value) for value in captured_values) if item]
+    if not captured_times:
+        raise SystemExit(f"拒绝生成正式看板：候选文件缺少 captured_at，无法确认快照新鲜度：{source}")
+
+    latest = max(captured_times)
+    age_minutes = (datetime.now() - latest).total_seconds() / 60
+    if age_minutes > 240:
+        raise SystemExit(
+            "拒绝生成正式看板：候选快照过旧。"
+            f" input={source} captured_at={latest:%Y-%m-%d %H:%M:%S} age={age_minutes:.1f}分钟。"
+            " 请先刷新采集；历史复盘请输出到非正式文件。"
+        )
+
+
 def candidate_rows(rows: Iterable[Dict[str, str]]) -> List[Dict[str, str]]:
     candidates = [row for row in rows if row.get("pool_level") in {"A", "B", "C"}]
     pool_order = {"A": 0, "B": 1, "C": 2}
@@ -262,6 +335,7 @@ def source_label(source: str) -> str:
         "sina_hq_universe_snapshot": "本地股票池 + 新浪行情",
         "sina_hq_focus_snapshot": "新浪重点样本",
         "akshare_stock_zh_a_spot_em": "AKShare 行情快照",
+        "minishare_rt_k_snapshot": "Minishare 实时日线",
     }
     if source.startswith("ths_manual_export:"):
         return "同花顺手动导入"
@@ -290,7 +364,9 @@ def recommendation_phase(now: Optional[datetime] = None) -> Dict[str, object]:
         (time(14, 35), "午后预选", "开始锁定候选范围，买入、止盈、止损点位仅作预估。", False),
         (time(14, 45), "尾盘候选", "开始给出尾盘候选和初步执行点位，继续剔除急拉诱多。", False),
         (time(14, 50), "第一版推荐", "基于当前行情生成尾盘第一版推荐，仅用于候选确认，不触发模拟盘买入。", False),
-        (time(14, 55), "最终推荐", "用最新价格、成交量、换手率等数据二次校验第一版推荐，并按最终名单执行模拟盘买入。", True),
+        (time(14, 53), "二次验证", "用最新价格、成交量、换手率等数据校验第一版推荐，未通过则降级或空仓。", False),
+        (time(14, 54), "模拟买入", "仅在A池、无严重风险、实时日线有效、分钟线确认通过时执行模拟买入。", True),
+        (time(14, 55), "执行审计", "检查14:54模拟买入是否完成，记录阻断原因；不再新增模拟买入。", False),
         (time(15, 0), "盘后复盘", "15:00 后只复盘当天结果，不再新增模拟买入。", False),
         (time(15, 10), "收盘复盘", "不再生成买入建议，记录收盘后复盘快照。", False),
         (time(23, 59, 59), "盘后复盘", "稳定收盘数据复盘，用于次日计划。", False),
@@ -312,16 +388,18 @@ def recommendation_phase(now: Optional[datetime] = None) -> Dict[str, object]:
 
 
 def to_dashboard_data(rows: List[Dict[str, str]], source: Path) -> Dict[str, object]:
+    market_rows = read_optional_csv(LATEST_MARKET)
+    runtime_rows = market_rows or rows
     candidates = candidate_rows(rows)
     excluded = excluded_rows(rows)
     pools = pool_counts(candidates)
     themes = theme_counts(candidates)
-    sources = source_counts(rows)
+    sources = source_counts(runtime_rows)
     primary_source = sources.most_common(1)[0][0] if sources else ""
-    trade_dates = sorted({row.get("trade_date", "") for row in rows if row.get("trade_date")})
-    trade_date = trade_dates[-1] if trade_dates else ""
+    trade_date = rows_trade_date(runtime_rows)
+    candidate_trade_date = rows_trade_date(rows)
     freshness = freshness_info(trade_date)
-    raw_health = raw_health_info(len(rows))
+    raw_health = raw_health_info(len(runtime_rows))
     cache_rows = count_csv_rows(UNIVERSE_CACHE)
     config = screening_config()
     quotes = market_quotes()
@@ -332,12 +410,14 @@ def to_dashboard_data(rows: List[Dict[str, str]], source: Path) -> Dict[str, obj
         "primary_source": source_label(primary_source),
         "source_counts": [(source_label(name), count) for name, count in sources.most_common()],
         "trade_date": trade_date,
+        "candidate_trade_date": candidate_trade_date,
+        "candidate_pool_current": bool(candidate_trade_date and candidate_trade_date == trade_date),
         **freshness,
         "market_state": market_state(candidates),
         "recommendation_phase": recommendation_phase(),
         "summary": {
-            "total_rows": len(rows),
-            "eligible": sum(1 for row in rows if row.get("universe_eligible") == "是"),
+            "total_rows": len(runtime_rows),
+            "eligible": sum(1 for row in runtime_rows if row.get("universe_eligible") == "是"),
             "excluded": len(excluded),
             "raw_candidate_count": raw_candidate_count(rows),
             "candidate_count": len(candidates),
@@ -354,6 +434,14 @@ def to_dashboard_data(rows: List[Dict[str, str]], source: Path) -> Dict[str, obj
         "config": config,
         "cloud_refresh_endpoint": read_optional_text(CLOUD_REFRESH_ENDPOINT),
         "quote_endpoints": quote_endpoint_config(),
+        "deployment": {
+            "runtime_root": str(ROOT),
+            "is_runtime_copy": "Application Support/CodexA/runtime_project" in str(ROOT),
+            "local_snapshot": read_optional_json(LOCAL_SYNC_STATUS),
+            "server_sync": read_optional_json(SERVER_SYNC_STATUS),
+            "primary_server_url": "http://121.41.97.20/",
+            "github_pages_role": "legacy_static_backup",
+        },
         "candidates": candidates,
         "excluded": excluded,
         "next_day_review": read_optional_csv(NEXT_DAY_REVIEW),
@@ -361,6 +449,7 @@ def to_dashboard_data(rows: List[Dict[str, str]], source: Path) -> Dict[str, obj
             "performance": read_optional_json(PAPER_PERFORMANCE),
             "trade_gate": read_optional_json(PAPER_TRADE_GATE),
             "positions": read_optional_csv(PAPER_POSITIONS),
+            "buy_basis": read_optional_csv(PAPER_BUY_BASIS),
             "ledger": enrich_paper_ledger(ledger, quotes),
         },
     }
@@ -374,7 +463,7 @@ def build_html(data: Dict[str, object]) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>A股短线助手看板</title>
+  <title>个人A股短线助手</title>
   <style>
     :root {{
       --bg: #f4f6f8;
@@ -475,7 +564,7 @@ def build_html(data: Dict[str, object]) -> str:
       border-bottom: 4px solid #c93434;
     }}
     .topbar-inner {{
-      max-width: 1320px;
+      max-width: 1540px;
       margin: 0 auto;
       padding: 20px 22px 18px;
       display: grid;
@@ -508,6 +597,32 @@ def build_html(data: Dict[str, object]) -> str:
       background: rgba(255,255,255,.08);
       max-width: 100%;
       white-space: nowrap;
+    }}
+    .deploy-status {{
+      margin-top: 8px;
+      color: #d7e3ef;
+      font-size: 12px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }}
+    .deploy-status strong {{
+      color: #fff;
+      font-weight: 800;
+    }}
+    .legacy-banner {{
+      display: none;
+      margin-bottom: 12px;
+      padding: 12px 14px;
+      border: 1px solid #f1c78f;
+      border-left: 4px solid #d9902f;
+      border-radius: 8px;
+      background: #fff7e8;
+      color: #6b4214;
+      font-size: 13px;
+      line-height: 1.55;
+    }}
+    body.github-pages .legacy-banner {{
+      display: block;
     }}
     .top-actions {{
       display: flex;
@@ -561,10 +676,60 @@ def build_html(data: Dict[str, object]) -> str:
       background: #48c989;
     }}
     main {{
-      max-width: 1320px;
+      max-width: 1540px;
       margin: 0 auto;
       padding: 14px 22px 44px;
     }}
+    .dashboard-frame {{
+      display: grid;
+      grid-template-columns: 174px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }}
+    .dashboard-main {{ min-width: 0; }}
+    .run-sidebar {{
+      position: sticky;
+      top: 12px;
+      align-self: start;
+      border: 1px solid #243342;
+      border-radius: 8px;
+      background: #111820;
+      color: #dfe8f1;
+      box-shadow: var(--shadow);
+      padding: 10px 9px;
+    }}
+    .run-sidebar-title {{
+      margin-bottom: 8px;
+      color: #ffffff;
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: 0;
+    }}
+    .run-timeline {{ display: grid; gap: 5px; }}
+    .run-step {{
+      display: grid;
+      grid-template-columns: 7px minmax(0, 1fr);
+      gap: 7px;
+      align-items: center;
+      min-height: 28px;
+      color: #cbd7e4;
+      font-size: 12px;
+      line-height: 1.2;
+    }}
+    .run-step::before {{
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #748194;
+      box-shadow: 0 0 0 2px rgba(116,129,148,.16);
+    }}
+    .run-step.done::before {{ background: #20b26b; box-shadow: 0 0 0 2px rgba(32,178,107,.2); }}
+    .run-step.warn::before {{ background: #d89a1d; box-shadow: 0 0 0 2px rgba(216,154,29,.2); }}
+    .run-step.blocked::before {{ background: #d93636; box-shadow: 0 0 0 2px rgba(217,54,54,.24); }}
+    .run-step.pending {{ color: #8ea0b2; }}
+    .run-step-time {{ display: block; font-size: 10px; font-weight: 800; opacity: .72; }}
+    .run-step-name {{ display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
     .notice {{
       display: none;
     }}
@@ -1128,6 +1293,7 @@ def build_html(data: Dict[str, object]) -> str:
       border-radius: 8px;
       background: #fff;
       overflow: hidden;
+      box-shadow: 0 6px 18px rgba(20, 32, 46, 0.05);
     }}
     .candidate-head {{
       display: grid;
@@ -1136,6 +1302,7 @@ def build_html(data: Dict[str, object]) -> str:
       align-items: center;
       padding: 12px;
       border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #fff, #fbfcfe);
     }}
     .pool {{
       width: 88px;
@@ -1167,6 +1334,15 @@ def build_html(data: Dict[str, object]) -> str:
       color: var(--red);
       white-space: nowrap;
     }}
+    .change.up {{
+      color: var(--red);
+    }}
+    .change.down {{
+      color: var(--green);
+    }}
+    .change.flat {{
+      color: var(--muted);
+    }}
     .candidate-body {{
       padding: 12px;
     }}
@@ -1184,10 +1360,18 @@ def build_html(data: Dict[str, object]) -> str:
       font-size: 12px;
       font-weight: 800;
     }}
+    .live-price-line.down {{
+      border-color: #bfdccf;
+      background: #f2fbf6;
+      color: #17623d;
+    }}
     .live-price-line strong {{
       color: var(--red);
       font-size: 18px;
       line-height: 1.1;
+    }}
+    .live-price-line strong.up {{
+      color: var(--red);
     }}
     .live-price-line strong.down {{
       color: var(--green);
@@ -1244,7 +1428,7 @@ def build_html(data: Dict[str, object]) -> str:
       color: var(--muted);
     }}
     .point.stop strong {{
-      color: var(--ink);
+      color: var(--green);
     }}
     .point.follow {{
       border-color: #cfe2de;
@@ -2133,6 +2317,9 @@ def build_html(data: Dict[str, object]) -> str:
       text-align: center;
     }}
     @media (max-width: 1180px) {{
+      .dashboard-frame {{ grid-template-columns: 1fr; }}
+      .run-sidebar {{ position: static; }}
+      .run-timeline {{ grid-template-columns: repeat(4, minmax(0, 1fr)); }}
       .overview-grid {{ grid-template-columns: repeat(5, minmax(0, 1fr)); }}
     }}
     @media (max-width: 980px) {{
@@ -2151,9 +2338,15 @@ def build_html(data: Dict[str, object]) -> str:
       .detail-row em {{ text-align: left; }}
     }}
     @media (max-width: 620px) {{
-      main {{ padding: 14px 12px 34px; }}
-      .topbar-inner {{ padding: 18px 12px; }}
-      h1 {{ font-size: 24px; }}
+      body {{ background: #eef2f6; }}
+      main {{ padding: 10px 10px 34px; }}
+      .dashboard-frame {{ gap: 8px; }}
+      .run-sidebar {{ padding: 8px; }}
+      .run-timeline {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .run-step {{ min-height: 24px; font-size: 11px; gap: 5px; }}
+      .topbar-inner {{ padding: 16px 12px 14px; gap: 10px; }}
+      h1 {{ font-size: 23px; line-height: 1.15; }}
+      .subtitle {{ font-size: 12px; line-height: 1.4; }}
       .top-actions {{ justify-content: flex-start; }}
       .status-pill {{ height: auto; min-height: 36px; padding: 8px 10px; white-space: normal; align-items: flex-start; }}
       .status-pill span:last-child {{ min-width: 0; overflow-wrap: anywhere; }}
@@ -2162,7 +2355,7 @@ def build_html(data: Dict[str, object]) -> str:
       .detail-content {{ width: 100%; max-width: 100%; padding: 10px 8px 28px; overflow-x: hidden; }}
       .detail-card {{ width: 100%; max-width: 100%; padding: 10px; margin-bottom: 10px; overflow: hidden; }}
       .detail-card h3 {{ font-size: 15px; margin-bottom: 7px; }}
-      .overview-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }}
+      .overview-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-bottom: 8px; }}
       .funnel-step {{ min-height: 56px; padding: 8px 9px; }}
       .funnel-step strong {{ font-size: 19px; }}
       .metric {{ min-height: 52px; padding: 8px 9px; }}
@@ -2170,13 +2363,17 @@ def build_html(data: Dict[str, object]) -> str:
       .metric.long strong, .metric.small strong {{ font-size: 15px; }}
       .system-health {{ grid-template-columns: 1fr; gap: 5px; }}
       .health-item {{ min-height: 0; }}
-      .paper-hero-head {{ display: block; }}
+      .paper-hero {{ padding: 10px; margin-bottom: 10px; }}
+      .paper-hero-head {{ display: block; margin-bottom: 8px; }}
+      .paper-hero-head h2 {{ font-size: 17px; }}
       .paper-hero-head span {{ display: block; margin-top: 4px; text-align: left; }}
       .focus-realtime-head {{ display: block; }}
       .focus-realtime-meta {{ margin-top: 8px; text-align: left; }}
       .focus-price-grid {{ grid-template-columns: 1fr; }}
-      .paper-hero .paper-metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-      .paper-metric strong {{ font-size: 14px; }}
+      .paper-hero .paper-metrics {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+      .paper-metric, .paper-position, .paper-trade {{ padding: 7px; }}
+      .paper-metric span {{ font-size: 11px; }}
+      .paper-metric strong {{ font-size: 13px; line-height: 1.15; }}
       .paper-broker-assets {{ grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 10px; }}
       .paper-broker-asset {{ padding: 8px 6px; }}
       .paper-broker-asset strong {{ font-size: 18px; }}
@@ -2225,7 +2422,8 @@ def build_html(data: Dict[str, object]) -> str:
       .paper-table-wrap {{ max-width: 100%; }}
       .paper-ledger-card,
       .paper-stock-card {{
-        padding: 8px;
+        padding: 10px;
+        border-color: #dbe4ee;
       }}
       .paper-ledger-card + .paper-ledger-card,
       .paper-stock-card + .paper-stock-card {{
@@ -2235,6 +2433,11 @@ def build_html(data: Dict[str, object]) -> str:
       .paper-stock-card-grid {{
         gap: 5px;
         margin-top: 6px;
+      }}
+      .paper-ledger-card-pnl,
+      .paper-stock-card-pnl {{
+        font-size: 15px;
+        line-height: 1.15;
       }}
       .paper-ledger-card-note {{
         margin-top: 6px;
@@ -2257,17 +2460,84 @@ def build_html(data: Dict[str, object]) -> str:
         display: block;
         margin-top: 8px;
       }}
-      .candidate-head {{ grid-template-columns: 1fr auto; }}
-      .pool {{ width: auto; height: 32px; padding: 0 10px; grid-column: 1 / -1; }}
-      .change {{ font-size: 20px; }}
-      .stats, .plan-grid {{ grid-template-columns: 1fr; }}
-      .stat {{ border-right: 0; border-bottom: 1px solid var(--line); }}
-      .stat:last-child {{ border-bottom: 0; }}
+      .board {{ border-radius: 8px; }}
+      .board-header {{ padding: 12px 10px 0; align-items: flex-start; }}
+      .board-header h2 {{ font-size: 17px; }}
+      .board-subtitle {{ font-size: 12px; line-height: 1.35; }}
+      .cards {{ padding: 10px; gap: 10px; }}
+      .candidate {{
+        border-color: #d8e1eb;
+        box-shadow: 0 6px 18px rgba(20, 32, 46, 0.07);
+      }}
+      .candidate-head {{
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        gap: 8px;
+        padding: 10px;
+      }}
+      .pool {{
+        width: 62px;
+        height: 34px;
+        padding: 0 8px;
+        grid-column: auto;
+        font-size: 11px;
+        border-radius: 7px;
+      }}
+      .name {{
+        font-size: 18px;
+        line-height: 1.15;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }}
+      .code {{ font-size: 11px; margin-top: 2px; }}
+      .change {{
+        font-size: 20px;
+        line-height: 1;
+        align-self: center;
+      }}
+      .candidate-body {{ padding: 10px; }}
+      .live-price-line {{ padding: 7px 9px; margin-bottom: 8px; }}
+      .live-price-line strong {{ font-size: 17px; }}
+      .tags {{ gap: 5px; margin-bottom: 8px; }}
+      .tag {{ font-size: 11px; padding: 2px 7px; }}
+      .scoreline {{ gap: 5px; margin-bottom: 8px; }}
+      .score-pill {{ font-size: 11px; padding: 3px 7px; }}
+      .point-grid {{
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+      }}
+      .point {{ padding: 7px 8px; }}
+      .point span {{ font-size: 11px; }}
+      .point strong {{ font-size: 17px; }}
+      .point.follow {{
+        grid-column: 1 / -1;
+      }}
+      .point.follow strong {{
+        font-size: 12px;
+      }}
+      .stats {{
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-bottom: 8px;
+      }}
+      .stat {{
+        padding: 7px 6px;
+        border-right: 1px solid var(--line);
+        border-bottom: 0;
+      }}
+      .stat span {{ font-size: 11px; }}
+      .stat strong {{ font-size: 14px; }}
+      .detail-actions {{ gap: 6px; margin-top: 8px; }}
+      .detail-button {{
+        height: 31px;
+        padding: 0 9px;
+        font-size: 12px;
+      }}
+      .plan-grid {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
-<body class="auth-pending">
-  <section class="auth-screen" id="authScreen">
+<body class="{'auth-pending' if AUTH_ENABLED else ''}">
+  <section class="auth-screen" id="authScreen" style="{'' if AUTH_ENABLED else 'display:none'}">
     <div class="auth-card">
       <h1>A股短线助手</h1>
       <p>请输入账号密码查看看板。</p>
@@ -2280,24 +2550,24 @@ def build_html(data: Dict[str, object]) -> str:
     </div>
   </section>
   <div class="shell">
-    <header class="topbar">
+    <header class="topbar compact-title-only">
       <div class="topbar-inner">
-        <div>
-          <h1>A股短线助手看板</h1>
-          <div class="subtitle" id="subtitle"></div>
-        </div>
-        <div class="top-actions">
-          <div class="status-pill"><span class="status-dot"></span><span id="marketState"></span></div>
-        </div>
+        <h1>个人A股短线助手</h1>
       </div>
     </header>
     <main>
-      <div class="notice">本看板用于盘后候选池整理和复盘辅助，不构成投资建议。重点看入选原因、风险标签和次日验证条件。</div>
+      <div class="dashboard-frame">
+        <aside class="run-sidebar" aria-label="运行流程">
+          <div class="run-sidebar-title">运行流程</div>
+          <div class="run-timeline" id="runTimeline"></div>
+        </aside>
+        <div class="dashboard-main">
+      <div class="legacy-banner" id="legacyBanner">当前页面来自 GitHub Pages 静态备份，可能落后于本机/服务器主看板。主看板以服务器地址和本机运行目录为准。</div>
       <div class="refresh-summary" id="refreshSummary"></div>
       <div class="freshness-banner" id="freshnessBanner"></div>
       <section class="system-health" id="systemHealth"></section>
       <section class="risk-alerts" id="riskAlerts"></section>
-      <section class="overview-grid" id="overviewMetrics">
+      <section class="overview-grid" id="overviewMetrics" style="display:none">
         <div class="funnel" id="screeningFunnel"></div>
         <div class="metrics" id="metrics"></div>
       </section>
@@ -2305,7 +2575,7 @@ def build_html(data: Dict[str, object]) -> str:
       <section class="paper-hero">
         <div class="paper-hero-head">
           <h2>模拟盘</h2>
-      <span>本金 1,000,000 元 · 重点关注平均买入 · 严格 T+1 · 14:55 尾盘执行</span>
+      <span>本金 1,000,000 元 · 重点关注平均买入 · 严格 T+1 · 14:54 尾盘执行 · 14:55审计</span>
         </div>
         <div class="paper-panel" id="paperTradingHero"></div>
       </section>
@@ -2317,16 +2587,13 @@ def build_html(data: Dict[str, object]) -> str:
               <div class="board-subtitle" id="resultCount"></div>
             </div>
           </div>
-          <div class="board-tools">
-            <div class="tool-panel">
-              <span class="label">搜索</span>
-              <input id="search" class="search" placeholder="搜索代码、名称、主题">
-            </div>
-          </div>
+          <input id="search" type="hidden" value="">
           <div class="cards" id="cards"></div>
           <div class="excluded" id="excluded"></div>
         </section>
       </section>
+        </div>
+      </div>
     </main>
   </div>
   <section class="detail-page" id="detailPage" aria-hidden="true">
@@ -2343,6 +2610,7 @@ def build_html(data: Dict[str, object]) -> str:
     const data = JSON.parse(document.getElementById('dashboard-data').textContent);
     data.candidates.forEach((row, index) => row.__idx = index);
     const state = {{ pool: 'ALL', theme: 'ALL', query: '' }};
+    const authEnabled = {json.dumps(AUTH_ENABLED)};
     const authUser = {json.dumps(AUTH_USER)};
     const authPassword = {json.dumps(AUTH_PASSWORD)};
     const authStorageKey = 'codex-a-dashboard-auth-ok';
@@ -2368,6 +2636,10 @@ def build_html(data: Dict[str, object]) -> str:
     }}
 
     function initLoginGate() {{
+      if (!authEnabled) {{
+        unlockDashboard();
+        return;
+      }}
       if (isLocalAccess()) {{
         unlockDashboard();
         return;
@@ -2394,20 +2666,13 @@ def build_html(data: Dict[str, object]) -> str:
       }});
     }}
 
-    const poolLabel = {{ A: '重点关注', B: '观察候补', C: '题材异动记录' }};
+    const poolLabel = {{ A: '重点关注', B: '观察候补', C: '异动记录' }};
     const poolNotes = {{
-      A: '重点关注：命中攻击型尾盘突破或主线热点回流等较强信号，并且严重风险较少，是次日优先观察对象。',
-      B: '观察候补：主题或形态有机会，但强度、确认度、风险控制不如重点关注，需要等待次日确认。',
-      C: '题材异动记录：命中重点主题，但暂时没有明确策略信号或强度不足，主要用于记录和后续观察。'
+      A: '重点关注：综合评分、量价质量、收盘位置、风险过滤和实时确认较优，是次日优先观察对象。',
+      B: '观察候补：量价或形态有机会，但强度、确认度、风险控制不如重点关注，需要等待次日确认。',
+      C: '异动记录：出现量价异动或低位修复迹象，但确认度不足，主要用于记录和后续观察。'
     }};
-    const metricItems = [
-      {{ label: '覆盖状态', value: data.summary.coverage_status }},
-      {{ label: '股票池缓存', value: data.summary.universe_cache }},
-      {{ label: '推荐阶段', value: data.recommendation_phase?.label || '-' }},
-      {{ label: '重点关注', value: data.summary.a_pool, tone: 'a', pool: 'A' }},
-      {{ label: '观察候补', value: data.summary.b_pool, tone: 'b', pool: 'B' }},
-      {{ label: '题材异动记录', value: data.summary.c_pool, tone: 'c', pool: 'C' }}
-    ];
+    const metricItems = [];
 
     function escapeHtml(value) {{
       return String(value ?? '').replace(/[&<>"']/g, char => ({{
@@ -2459,6 +2724,12 @@ def build_html(data: Dict[str, object]) -> str:
         first_take_profit_point: numberValue(row.first_take_profit_point),
         defensive_stop_point: numberValue(row.defensive_stop_point),
         first_take_done: row.first_take_done === true || row.first_take_done === 'True' || row.first_take_done === 'true' || row.first_take_done === '是',
+        profit_mode: row.profit_mode || '',
+        highest_price: numberValue(row.highest_price || row.current_price || row.entry_price),
+        highest_profit_pct: numberValue(row.highest_profit_pct),
+        trailing_stop_point: numberValue(row.trailing_stop_point),
+        strong_confirmed: row.strong_confirmed === true || row.strong_confirmed === 'True' || row.strong_confirmed === 'true' || row.strong_confirmed === '是',
+        strong_confirmed_checks: numberValue(row.strong_confirmed_checks),
         live_status: '等待实时行情'
       }}));
       return {{
@@ -2468,6 +2739,7 @@ def build_html(data: Dict[str, object]) -> str:
         cash: numberValue(perf.cash),
         realized_pnl: numberValue(perf.realized_pnl),
         positions,
+        buy_basis: (paper.buy_basis || []).map(row => ({{ ...row }})),
         ledger: (paper.ledger || []).map(row => ({{ ...row }})),
         last_live_updated: '',
         note: perf.note || ''
@@ -2479,6 +2751,7 @@ def build_html(data: Dict[str, object]) -> str:
       try {{
         const stored = JSON.parse(localStorage.getItem(paperStorageKey()) || 'null');
         if (stored && Array.isArray(stored.positions) && Array.isArray(stored.ledger)) {{
+          if (!Array.isArray(stored.buy_basis)) stored.buy_basis = [];
           liveState.paper = stored;
           return liveState.paper;
         }}
@@ -2508,19 +2781,38 @@ def build_html(data: Dict[str, object]) -> str:
     }}
 
     function priceTone(row) {{
+      const quote = liveState.quotes[row.stock_code] || {{}};
+      const hasLivePrice = quote.price !== undefined && quote.price !== null && String(quote.price).trim() !== '';
       const price = displayPrice(row);
       const base = numberValue(row.buy_point || row.close);
-      if (!price || !base) return '';
-      if (price > base) return 'up';
-      if (price < base) return 'down';
-      return '';
+      if (hasLivePrice && price && base) {{
+        if (price > base) return 'up';
+        if (price < base) return 'down';
+      }}
+      const dailyChange = numberValue(row.pct_change);
+      if (dailyChange > 0) return 'up';
+      if (dailyChange < 0) return 'down';
+      return 'flat';
+    }}
+
+    function isLocalDashboardHost() {{
+      return ['127.0.0.1', 'localhost', '::1'].includes(window.location.hostname);
+    }}
+
+    function isGithubPagesHost() {{
+      return window.location.hostname.endsWith('github.io');
+    }}
+
+    function supportsSameOriginQuotes() {{
+      return !isGithubPagesHost() && ['http:', 'https:'].includes(window.location.protocol);
     }}
 
     function quoteEndpoints() {{
+      const sameOrigin = supportsSameOriginQuotes() ? [window.location.origin] : [];
       const configured = Array.isArray(data.quote_endpoints) ? data.quote_endpoints : [];
       const fallback = data.cloud_refresh_endpoint ? [data.cloud_refresh_endpoint] : [];
       const seen = new Set();
-      return configured.concat(fallback)
+      return sameOrigin.concat(configured, fallback)
         .map(endpoint => String(endpoint || '').trim().replace(/\/$/, ''))
         .filter(endpoint => {{
           if (!endpoint || seen.has(endpoint)) return false;
@@ -2530,44 +2822,71 @@ def build_html(data: Dict[str, object]) -> str:
     }}
 
     function quoteUrl(endpoint) {{
-      return `${{endpoint.replace(/\/$/, '')}}/quotes`;
+      const normalized = String(endpoint || '').replace(/\/$/, '');
+      if (supportsSameOriginQuotes() && normalized === window.location.origin) return `${{normalized}}/api/quotes`;
+      return `${{normalized}}/quotes`;
     }}
 
     function quoteSourceLabel(endpoint) {{
       if (!endpoint) return '';
       try {{
-        const host = new URL(endpoint).hostname;
-        if (host.includes('alexsheng666.com')) return '专属域名行情';
-        if (host.includes('workers.dev')) return 'Worker行情通道';
-        return host;
+        const url = new URL(endpoint);
+        if (supportsSameOriginQuotes() && url.origin === window.location.origin) return '实时行情';
+        const host = url.hostname;
+        if (host.includes('alexsheng666.com')) return '备用行情';
+        if (host.includes('workers.dev')) return '备用行情';
+        return '备用行情';
       }} catch (error) {{
         return '行情通道';
       }}
     }}
 
-    function strongUpsideCandidate(row, price) {{
-      const take = numberValue(row.first_take_profit_point || row.sell_point);
-      if (!take || price < take) return false;
-      const score = numberValue(row.candidate_score);
-      const themeLimitUps = numberValue(row.real_theme_limit_up_count || row.theme_limit_up_count);
-      const closePosition = numberValue(row.close_position_pct);
-      const volumeRatio = numberValue(row.volume_ratio);
-      const cleanRisk = !hasMeaningfulRisk(row.risk_tags);
-      return score >= 120 && themeLimitUps >= 3 && closePosition >= 97 && volumeRatio >= 1.2 && cleanRisk;
+    function trailingDrawdownPct(highestProfitPct) {{
+      if (highestProfitPct >= 5) return 1.5;
+      if (highestProfitPct >= 3) return 1.0;
+      return 0.8;
+    }}
+
+    function trailingStopPoint(entry, highestPrice) {{
+      if (!entry || !highestPrice) return 0;
+      const highestProfitPct = (highestPrice - entry) / entry * 100;
+      if (highestProfitPct < 2) return 0;
+      const stop = highestPrice * (1 - trailingDrawdownPct(highestProfitPct) / 100);
+      const floor = entry * 1.008;
+      return Number(Math.max(stop, floor).toFixed(2));
+    }}
+
+    function strongConfirmation(row, quote, price, highestPrice) {{
+      const entry = numberValue(row.entry_price);
+      const open = numberValue(quote.open || row.open || entry);
+      const vwap = numberValue(quote.vwap_price || row.vwap_price);
+      const volumeRatio = numberValue(quote.volume_ratio || row.volume_ratio);
+      const turnoverRate = numberValue(quote.turnover_rate || row.turnover_rate);
+      const closePosition = numberValue(quote.close_position_pct || row.close_position_pct);
+      const score = numberValue(row.candidate_score || (row.candidate || {{}}).candidate_score);
+      const poolRank = numberValue(row.pool_rank || 999);
+      const currentProfit = entry ? (price - entry) / entry * 100 : 0;
+      const highestProfit = entry ? (highestPrice - entry) / entry * 100 : 0;
+      const drawdown = highestPrice ? (highestPrice - price) / highestPrice * 100 : 0;
+      const allowedDrawdown = trailingDrawdownPct(highestProfit);
+      const checks = [
+        currentProfit >= 2,
+        Boolean(vwap && price >= vwap),
+        highestProfit >= 2 && drawdown <= allowedDrawdown,
+        price >= open,
+        Boolean((volumeRatio >= 1 && volumeRatio <= 3.5) || turnoverRate >= 2 || closePosition >= 85),
+        Boolean(score >= 100 || poolRank <= 10)
+      ];
+      return {{
+        ok: checks.filter(Boolean).length >= 4,
+        passed: checks.filter(Boolean).length,
+        drawdown,
+        allowedDrawdown
+      }};
     }}
 
     function candidateByCode(code) {{
       return data.candidates.find(row => row.stock_code === code) || {{}};
-    }}
-
-    function dynamicStopPoint(entry, price, baseStop) {{
-      if (!entry || !price) return baseStop;
-      const profitPct = (price - entry) / entry * 100;
-      let stop = baseStop || entry * 0.98;
-      if (profitPct >= 8) stop = Math.max(stop, price * 0.965, entry * 1.03);
-      else if (profitPct >= 5) stop = Math.max(stop, price * 0.97, entry * 1.015);
-      else if (profitPct >= 2) stop = Math.max(stop, entry * 1.002);
-      return Number(stop.toFixed(2));
     }}
 
     function paperRiskRows() {{
@@ -2579,14 +2898,21 @@ def build_html(data: Dict[str, object]) -> str:
         const price = numberValue(quote.price || position.current_price || entry);
         const take = numberValue(position.first_take_profit_point || candidate.first_take_profit_point || candidate.sell_point || (entry ? entry * 1.02 : 0));
         const baseStop = numberValue(position.defensive_stop_point || candidate.defensive_stop_point || candidate.stop_point || (entry ? entry * 0.98 : 0));
-        const dynamicStop = dynamicStopPoint(entry, price, baseStop);
+        const hardStop = entry ? Number((entry * 0.96).toFixed(2)) : 0;
+        const quoteHigh = numberValue(quote.high || position.highest_price || price);
+        const highestPrice = Math.max(numberValue(position.highest_price || entry), quoteHigh, price);
+        const trailingStop = trailingStopPoint(entry, highestPrice);
         const profitPct = entry ? Number(((price - entry) / entry * 100).toFixed(2)) : 0;
+        const highestProfitPct = entry ? Number(((highestPrice - entry) / entry * 100).toFixed(2)) : 0;
         const dailyPct = numberValue(quote.pct_change);
         const firstTakeDone = position.first_take_done === true || position.first_take_done === 'true' || position.first_take_done === 'True' || position.first_take_done === '是';
-        const strong = Boolean(price && take && price >= take && (firstTakeDone || profitPct >= 3 || dailyPct >= 5 || strongUpsideCandidate(candidate, price)));
+        const strength = strongConfirmation({{ ...candidate, ...position }}, quote, price, highestPrice);
+        const strong = Boolean(price && take && price >= take && strength.ok);
         let status = '持仓观察';
-        if (price && baseStop && price <= baseStop) status = '触发防守止损';
-        else if (price && dynamicStop && price <= dynamicStop && profitPct > 0) status = '触发动态止损观察';
+        if (price && hardStop && price <= hardStop) status = '触发硬止损';
+        else if (price && baseStop && price <= baseStop) status = '触发防守止损';
+        else if (firstTakeDone && (position.profit_mode === 'trailing' || position.strong_confirmed) && trailingStop && price <= trailingStop) status = '触发移动止盈';
+        else if (firstTakeDone && !strong) status = '保守保护止盈';
         else if (price && take && price >= take && !firstTakeDone) status = '到达第一止盈';
         else if (strong) status = '强势跟踪';
         return {{
@@ -2597,11 +2923,15 @@ def build_html(data: Dict[str, object]) -> str:
           price,
           take: take ? Number(take.toFixed(2)) : 0,
           baseStop: baseStop ? Number(baseStop.toFixed(2)) : 0,
-          dynamicStop,
+          hardStop,
+          highestPrice,
+          highestProfitPct,
+          trailingStop,
           profitPct,
           dailyPct,
           firstTakeDone,
           strong,
+          strength,
           status
         }};
       }});
@@ -2613,9 +2943,18 @@ def build_html(data: Dict[str, object]) -> str:
         const price = numberValue(row.price);
         const take = numberValue(row.take);
         const stop = numberValue(row.baseStop);
-        const dynamicStop = numberValue(row.dynamicStop);
+        const hardStop = numberValue(row.hardStop);
+        const trailingStop = numberValue(row.trailingStop);
         if (!price) return;
-        if (stop && price <= stop) {{
+        if (hardStop && price <= hardStop) {{
+          alerts.push({{
+            type: 'stop',
+            code: row.stock_code,
+            name: row.stock_name,
+            title: `${{row.stock_code}} ${{row.stock_name}} 触发硬止损`,
+            detail: `实时价 ${{price.toFixed(2)}} ≤ 硬止损 ${{hardStop.toFixed(2)}}。剩余持仓优先清仓，严格遵守 T+1。`,
+          }});
+        }} else if (stop && price <= stop) {{
           alerts.push({{
             type: 'stop',
             code: row.stock_code,
@@ -2623,13 +2962,13 @@ def build_html(data: Dict[str, object]) -> str:
             title: `${{row.stock_code}} ${{row.stock_name}} 触发防守止损`,
             detail: `实时价 ${{price.toFixed(2)}} ≤ 防守止损 ${{stop.toFixed(2)}}。模拟盘持仓优先按纪律处理。`,
           }});
-        }} else if (dynamicStop && price <= dynamicStop && numberValue(row.profitPct) > 0) {{
+        }} else if (row.firstTakeDone && (row.profit_mode === 'trailing' || row.strong_confirmed) && trailingStop && price <= trailingStop && numberValue(row.profitPct) > 0) {{
           alerts.push({{
-            type: 'stop',
+            type: 'take',
             code: row.stock_code,
             name: row.stock_name,
-            title: `${{row.stock_code}} ${{row.stock_name}} 触发动态止损观察`,
-            detail: `实时价 ${{price.toFixed(2)}} ≤ 动态止损 ${{dynamicStop.toFixed(2)}}。已有浮盈回落，建议按移动保护位复核。`,
+            title: `${{row.stock_code}} ${{row.stock_name}} 触发移动止盈`,
+            detail: `实时价 ${{price.toFixed(2)}} ≤ 移动止盈 ${{trailingStop.toFixed(2)}}。已有浮盈回落，剩余仓位应锁定利润。`,
           }});
         }}
         if (take && price >= take && !row.firstTakeDone) {{
@@ -2647,7 +2986,7 @@ def build_html(data: Dict[str, object]) -> str:
             code: row.stock_code,
             name: row.stock_name,
             title: `${{row.stock_code}} ${{row.stock_name}} 强势跟踪标记`,
-            detail: `实时价 ${{price.toFixed(2)}}，浮盈 ${{pct(row.profitPct)}}。涨势较强，可保留强势跟踪标记，并参考动态止损 ${{dynamicStop ? dynamicStop.toFixed(2) : '-'}}。`,
+            detail: `实时价 ${{price.toFixed(2)}}，浮盈 ${{pct(row.profitPct)}}，强势确认 ${{row.strength ? row.strength.passed : 0}}/6。剩余仓位参考移动止盈 ${{trailingStop ? trailingStop.toFixed(2) : '-'}}。`,
           }});
         }}
       }});
@@ -2773,7 +3112,8 @@ def build_html(data: Dict[str, object]) -> str:
         const price = numberValue(row.price);
         const take = numberValue(row.take);
         const stop = numberValue(row.baseStop);
-        const dynamicStop = numberValue(row.dynamicStop);
+        const hardStop = numberValue(row.hardStop);
+        const trailingStop = numberValue(row.trailingStop);
         const quote = row.quote || {{}};
         const triggered = row.status.includes('触发') || row.status.includes('到达');
         const tone = price > numberValue(row.entry) ? 'up' : price < numberValue(row.entry) ? 'down' : '';
@@ -2787,8 +3127,8 @@ def build_html(data: Dict[str, object]) -> str:
             <strong>${{escapeHtml(row.stock_code)}} ${{escapeHtml(row.stock_name)}}</strong>
             <em class="price ${{tone}}">${{price ? price.toFixed(2) : '-'}}</em>
             <span>成本 ${{row.entry ? row.entry.toFixed(2) : '-'}} · 浮盈 ${{pct(row.profitPct)}}</span>
-            <span>第一止盈 ${{take ? take.toFixed(2) : '-'}} · 防守止损 ${{stop ? stop.toFixed(2) : '-'}}</span>
-            <span>动态止损 ${{dynamicStop ? dynamicStop.toFixed(2) : '-'}} · ${{escapeHtml(row.status)}}</span>
+            <span>第一止盈 ${{take ? take.toFixed(2) : '-'}} · 防守/硬止损 ${{stop ? stop.toFixed(2) : '-'}} / ${{hardStop ? hardStop.toFixed(2) : '-'}}</span>
+            <span>移动止盈 ${{trailingStop ? trailingStop.toFixed(2) : '-'}} · ${{escapeHtml(row.status)}}</span>
             <span>${{quote.pct_change !== undefined ? `涨跌 ${{pct(quote.pct_change)}} · ` : ''}}${{quote.time ? escapeHtml(quote.time) : '等待实时刷新'}}</span>
           </div>
         `;
@@ -2811,9 +3151,32 @@ def build_html(data: Dict[str, object]) -> str:
         const code = item.dataset.cardLivePrice;
         const row = data.candidates.find(candidate => candidate.stock_code === code);
         if (!row) return;
+        const quote = liveState.quotes[code] || {{}};
         const price = displayPrice(row);
+        const tone = priceTone(row);
         item.textContent = price ? price.toFixed(2) : '-';
-        item.classList.toggle('down', priceTone(row) === 'down');
+        item.classList.toggle('down', tone === 'down');
+        item.classList.toggle('up', tone === 'up');
+        item.classList.toggle('flat', tone !== 'down' && tone !== 'up');
+        const liveRow = document.querySelector(`[data-card-live-row="${{code}}"]`);
+        if (liveRow) {{
+          liveRow.classList.toggle('down', tone === 'down');
+          liveRow.classList.toggle('up', tone === 'up');
+          liveRow.classList.toggle('flat', tone !== 'down' && tone !== 'up');
+        }}
+        const change = document.querySelector(`[data-card-live-change="${{code}}"]`);
+        if (change && quote.pct_change !== undefined && quote.pct_change !== null) {{
+          const changeValue = Number(quote.pct_change);
+          change.textContent = `${{changeValue.toFixed(2)}}%`;
+          change.classList.toggle('down', changeValue < 0);
+          change.classList.toggle('up', changeValue > 0);
+          change.classList.toggle('flat', changeValue === 0);
+        }}
+        const meta = document.querySelector(`[data-card-live-meta="${{code}}"]`);
+        if (meta) {{
+          const time = quote.time || liveState.lastUpdated || '刷新中';
+          meta.textContent = `实时价 · ${{time}}`;
+        }}
       }});
     }}
 
@@ -2840,6 +3203,26 @@ def build_html(data: Dict[str, object]) -> str:
       return half > 0 ? half : numberValue(shares);
     }}
 
+    function quoteTradeTime(code) {{
+      const quote = liveState.quotes[String(code)] || {{}};
+      const text = String(quote.time || '').trim();
+      const full = text.match(/(\\d{{1,2}}:\\d{{2}}:\\d{{2}})/);
+      if (full) return full[1].padStart(8, '0');
+      const short = text.match(/(\\d{{1,2}}:\\d{{2}})/);
+      if (short) return `${{short[1].padStart(5, '0')}}:00`;
+      const parts = new Intl.DateTimeFormat('zh-CN', {{
+        timeZone: 'Asia/Shanghai',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      }}).formatToParts(new Date()).reduce((acc, item) => {{
+        acc[item.type] = item.value;
+        return acc;
+      }}, {{}});
+      return `${{parts.hour}}:${{parts.minute}}:${{parts.second}}`;
+    }}
+
     function appendPaperSell(runtime, position, shares, price, tradeDate, note) {{
       const entryPrice = numberValue(position.entry_price);
       const amount = Number((price * shares).toFixed(2));
@@ -2851,6 +3234,7 @@ def build_html(data: Dict[str, object]) -> str:
       position.remaining_shares = Math.max(0, numberValue(position.remaining_shares) - shares);
       runtime.ledger.push({{
         trade_date: tradeDate,
+        trade_time: quoteTradeTime(position.stock_code),
         action: 'SELL',
         stock_code: position.stock_code,
         stock_name: position.stock_name,
@@ -2890,6 +3274,23 @@ def build_html(data: Dict[str, object]) -> str:
 
         const stop = numberValue(position.defensive_stop_point);
         const take = numberValue(position.first_take_profit_point);
+        const hardStop = numberValue(position.entry_price) * 0.96;
+        const quoteHigh = numberValue(quote.high || price);
+        position.highest_price = Math.max(numberValue(position.highest_price || position.entry_price), quoteHigh, price);
+        position.highest_profit_pct = numberValue(position.entry_price)
+          ? Number(((position.highest_price - numberValue(position.entry_price)) / numberValue(position.entry_price) * 100).toFixed(2))
+          : 0;
+        const trailingStop = trailingStopPoint(numberValue(position.entry_price), numberValue(position.highest_price));
+        position.trailing_stop_point = trailingStop;
+        const strength = strongConfirmation(position, quote, price, numberValue(position.highest_price));
+        position.strong_confirmed = strength.ok;
+        position.strong_confirmed_checks = strength.passed;
+        if (hardStop && price <= hardStop) {{
+          appendPaperSell(runtime, position, remaining, price, tradeDate, `实时模拟：触发硬止损 -4%，按实时价 ${{price.toFixed(2)}} 清仓；严格遵守 T+1`);
+          position.live_status = '已触发硬止损清仓';
+          changed = true;
+          return;
+        }}
         if (stop && price <= stop) {{
           appendPaperSell(runtime, position, remaining, price, tradeDate, `实时模拟：触发防守止损，按实时价 ${{price.toFixed(2)}} 清仓；严格遵守 T+1`);
           position.live_status = '已触发防守止损清仓';
@@ -2898,14 +3299,31 @@ def build_html(data: Dict[str, object]) -> str:
         }}
         if (take && price >= take && !position.first_take_done) {{
           const sellShares = sellSharesForHalf(remaining);
-          appendPaperSell(runtime, position, sellShares, price, tradeDate, `实时模拟：触发第一止盈，按实时价 ${{price.toFixed(2)}} 卖出 50%；剩余仓位进入强势跟踪`);
+          const mode = strength.ok ? '移动止盈' : '保守保护止盈';
+          appendPaperSell(runtime, position, sellShares, price, tradeDate, `实时模拟：触发第一止盈，按实时价 ${{price.toFixed(2)}} 卖出 50%；剩余仓位进入${{mode}}`);
           position.first_take_done = true;
-          position.live_status = numberValue(position.remaining_shares) > 0 ? '第一止盈已执行，剩余强势跟踪' : '第一止盈已全部卖出';
+          position.profit_mode = strength.ok ? 'trailing' : 'protective';
+          position.live_status = numberValue(position.remaining_shares) > 0 ? `第一止盈已执行，剩余${{mode}}` : '第一止盈已全部卖出';
           changed = true;
           return;
         }}
-        if (take && price >= take && position.first_take_done) {{
-          position.live_status = '强势跟踪中，跌破分时均价线再处理';
+        if (position.first_take_done && (position.profit_mode === 'trailing' || position.strong_confirmed) && trailingStop && price <= trailingStop) {{
+          appendPaperSell(runtime, position, remaining, price, tradeDate, `实时模拟：触发移动止盈，按实时价 ${{price.toFixed(2)}} 卖出剩余仓位；强势确认 ${{strength.passed}}/6`);
+          position.live_status = '已触发移动止盈';
+          changed = true;
+          return;
+        }}
+        if (position.first_take_done && !strength.ok) {{
+          const protectFloor = numberValue(position.entry_price) * 1.008;
+          if ((take && price < take) || price <= protectFloor) {{
+            appendPaperSell(runtime, position, remaining, price, tradeDate, `实时模拟：强势确认不足，按实时价 ${{price.toFixed(2)}} 卖出剩余仓位，执行保守保护止盈`);
+            position.live_status = '已执行保守保护止盈';
+            changed = true;
+            return;
+          }}
+          position.live_status = '保守保护止盈观察中';
+        }} else if (take && price >= take && position.first_take_done) {{
+          position.live_status = `强势跟踪中，移动止盈 ${{trailingStop ? trailingStop.toFixed(2) : '-'}}`;
         }} else {{
           position.live_status = '持仓观察中';
         }}
@@ -2915,8 +3333,32 @@ def build_html(data: Dict[str, object]) -> str:
       savePaperRuntime();
     }}
 
+    function buyBasisRows(runtime) {{
+      const saved = Array.isArray(runtime.buy_basis) ? runtime.buy_basis : [];
+      if (saved.length) return saved;
+      return (runtime.positions || []).map(row => ({{
+        trade_date: row.entry_date || '',
+        buy_time: row.entry_time || '',
+        stock_code: row.stock_code || '',
+        stock_name: row.stock_name || '',
+        pool_rank: row.pool_rank || '',
+        candidate_score: row.candidate_score || '',
+        entry_price: row.entry_price || '',
+        shares: row.shares || row.remaining_shares || '',
+        amount: numberValue(row.cost || row.entry_price * row.shares).toFixed(2),
+        first_take_profit_point: row.first_take_profit_point || '',
+        defensive_stop_point: row.defensive_stop_point || '',
+        entry_reasons: '由当前模拟持仓反推，历史买入快照文件不存在',
+        workflow_summary: row.sell_rule || '',
+        data_source: '',
+        source_level: '',
+        captured_at: ''
+      }}));
+    }}
+
     function paperSnapshot() {{
       const runtime = getPaperRuntime();
+      const buyBasis = buyBasisRows(runtime);
       let marketValue = 0;
       let unrealized = 0;
       const positions = runtime.positions
@@ -2956,6 +3398,7 @@ def build_html(data: Dict[str, object]) -> str:
           note: runtime.note || '实时模拟盘运行中'
         }},
         positions,
+        buy_basis: buyBasis,
         ledger: runtime.ledger || []
       }};
     }}
@@ -2981,7 +3424,7 @@ def build_html(data: Dict[str, object]) -> str:
           liveState.quotes = result.quotes || {{}};
           liveState.lastUpdated = new Date().toLocaleTimeString('zh-CN', {{ hour12: false }});
           liveState.quoteEndpoint = baseEndpoint;
-          liveState.quoteSource = quoteSourceLabel(baseEndpoint);
+          liveState.quoteSource = result.source || quoteSourceLabel(baseEndpoint);
           updatePaperRuntimeFromQuotes();
           lastError = null;
           break;
@@ -3009,12 +3452,17 @@ def build_html(data: Dict[str, object]) -> str:
       liveState.timer = setInterval(fetchFocusQuotes, 5000);
     }}
 
+    function renderDeploymentStatus() {{
+      const isGithubPages = location.hostname.endsWith('github.io');
+      document.body.classList.toggle('github-pages', isGithubPages);
+    }}
+
     function renderMetrics() {{
       const sourceDetail = (data.source_counts || []).map(([name, count]) => `${{name}} ${{count}}`).join('，');
-      document.getElementById('subtitle').textContent = `生成时间：${{data.generated_at}} · 来源：${{sourceDetail || data.primary_source || '-'}}`;
       const phase = data.recommendation_phase || {{}};
-      document.getElementById('marketState').textContent = `市场状态：${{data.market_state}} · ${{phase.label || '-'}}：${{phase.note || '-'}}`;
-      document.getElementById('metrics').innerHTML = metricItems.map(item => `
+      const metricsBox = document.getElementById('metrics');
+      metricsBox.style.display = metricItems.length ? '' : 'none';
+      metricsBox.innerHTML = metricItems.map(item => `
         <div class="metric ${{item.tone || ''}} ${{item.pool ? 'clickable' : ''}} ${{item.pool && state.pool === item.pool ? 'active-filter' : ''}} ${{String(item.value ?? '').length >= 6 ? 'long' : ''}} ${{String(item.value ?? '').length >= 10 ? 'small' : ''}}" ${{item.pool ? `data-metric-pool="${{item.pool}}" role="button" tabindex="0" aria-label="查看${{escapeHtml(item.label)}}列表"` : ''}}>
           ${{item.pool ? `<button class="note-corner" type="button" data-note-pool="${{item.pool}}" aria-label="${{escapeHtml(item.label)}}说明"></button><div class="note-popup">${{escapeHtml(poolNotes[item.pool])}}</div>` : ''}}
           <span>${{escapeHtml(item.label)}}</span>
@@ -3030,26 +3478,8 @@ def build_html(data: Dict[str, object]) -> str:
     }}
 
     function renderFunnel() {{
-      const total = data.summary.total_rows || 0;
-      const eligible = data.summary.eligible || 0;
-      const rawHits = data.summary.raw_candidate_count || 0;
-      const finalCount = data.summary.candidate_count || 0;
-      const steps = [
-        {{ label: '原始采集', value: total, note: `行情接口拿到` }},
-        {{ label: '有效主板', value: eligible, note: `剔除 ST、创业板等` }},
-        {{ label: '规则命中', value: rawHits, note: `主题/形态/量价命中` }},
-        {{ label: '最终展示', value: finalCount, note: `收敛到三类池` }}
-      ];
-      document.getElementById('screeningFunnel').innerHTML = steps.map((step, index) => {{
-        const denominator = index === 0 ? total : steps[index - 1].value;
-        return `
-          <div class="funnel-step">
-            <span>${{escapeHtml(step.label)}}</span>
-            <strong>${{escapeHtml(step.value)}}</strong>
-            <small>${{escapeHtml(step.note)}} · 保留 ${{escapeHtml(index === 0 ? '100%' : percent(step.value, denominator))}}</small>
-          </div>
-        `;
-      }}).join('');
+      const box = document.getElementById('screeningFunnel');
+      if (box) box.innerHTML = '';
     }}
 
     function renderRefreshSummary() {{
@@ -3085,19 +3515,67 @@ def build_html(data: Dict[str, object]) -> str:
     }}
 
     function renderFreshnessNotice() {{
-      if (!data.freshness_note || data.freshness_status === '今日数据') return;
+      const abnormalFreshness = new Set(['可能过期', '日期异常', '无数据日期']);
+      if (!data.freshness_note || data.freshness_status === '今日数据' || !abnormalFreshness.has(data.freshness_status)) return;
       const box = document.getElementById('freshnessBanner');
       box.textContent = `${{data.freshness_status}}：${{data.freshness_note}}`;
       box.classList.add('show');
-      if (data.freshness_status === '可能过期' || data.freshness_status === '日期异常' || data.freshness_status === '无数据日期') {{
-        box.classList.add('warn');
-      }}
+      box.classList.add('warn');
     }}
 
     function healthTone(status) {{
       if (status === '采集异常' || status === '日期异常' || status === '可能过期' || status === '无数据日期' || status === '闸门关闭' || status === '快照过旧') return 'danger';
-      if (status === '采集不足' || status === '上一自然日数据' || status === '窗口已关闭' || status === '无A池') return 'warn';
+      if (status === '采集不足' || status === '上一自然日数据' || status === '窗口已关闭' || status === '无A池' || status === '非交易时段') return 'warn';
       return '';
+    }}
+
+    function renderRunTimeline() {{
+      const box = document.getElementById('runTimeline');
+      if (!box) return;
+      const paper = data.paper_trading || {{}};
+      const perf = paper.performance || {{}};
+      const gate = paper.trade_gate || perf.trade_gate || {{}};
+      const sourceLevel = String(gate.source_level || (data.summary || {{}}).source_level || '').toUpperCase();
+      const positions = ((paper.positions || perf.positions || []) || []).length;
+      const aCount = (data.candidates || []).filter(row => row.pool_level === 'A').length;
+      const rawTime = data.generated_at || (data.summary || {{}}).latest_update || (data.summary || {{}}).dashboard_updated_at || '';
+      const now = rawTime ? new Date(String(rawTime).replace(' ', 'T')) : new Date();
+      const currentMinutes = Number.isNaN(now.getTime()) ? -1 : now.getHours() * 60 + now.getMinutes();
+      const steps = [
+        ['09:20', '集合竞价', 'auction'],
+        ['09:25', '开盘检查', 'open_check'],
+        ['09:32', '开盘确认', 'open_confirm'],
+        ['10:30', '上午刷新', 'morning_refresh'],
+        ['11:25', '午间复核', 'midday_review'],
+        ['13:30', '下午刷新', 'afternoon_refresh'],
+        ['14:15', '尾盘观察', 'tail_watch'],
+        ['14:20', '资讯复核', 'news_review'],
+        ['14:35', '卖出风控', 'sell_risk'],
+        ['14:45', '买前检查', 'buy_precheck'],
+        ['14:50', '初选推荐', 'initial_pick'],
+        ['14:53', '二次验证', 'second_confirm'],
+        ['14:54', '模拟买入', 'paper_buy'],
+        ['14:55', '执行审计', 'execution_audit'],
+        ['15:10', '收盘复盘', 'close_review'],
+        ['16:10', '日报归档', 'daily_archive']
+      ];
+      const minutesOf = time => {{
+        const [hour, minute] = time.split(':').map(Number);
+        return hour * 60 + minute;
+      }};
+      const blockedText = `${{gate.status || ''}} ${{gate.message || ''}}`;
+      const hasBlock = /禁止|闸门关闭|数据源降级|无A池|未通过|失败/.test(blockedText);
+      const rowHtml = steps.map(([time, name, key]) => {{
+        const reached = currentMinutes >= minutesOf(time);
+        let status = reached ? 'done' : 'pending';
+        if (reached && sourceLevel === 'C' && ['morning_refresh', 'midday_review', 'afternoon_refresh', 'tail_watch', 'news_review'].includes(key)) status = 'warn';
+        if (reached && key === 'sell_risk' && positions > 0 && gate.sell_execution_allowed === false) status = 'blocked';
+        if (reached && key === 'initial_pick' && aCount <= 0) status = 'blocked';
+        if (reached && key === 'second_confirm' && Number(gate.realtime_attempts || 0) > 0 && gate.realtime_confirmed === false) status = 'blocked';
+        if (reached && key === 'paper_buy' && hasBlock && gate.status !== '已建仓' && gate.status !== '已有持仓') status = 'blocked';
+        return `<div class="run-step ${{status}}" title="${{escapeHtml(time + ' ' + name + '：' + (status === 'pending' ? '未到节点' : status === 'blocked' ? (gate.message || gate.status || '阻断') : status === 'warn' ? '降级可用/需观察' : '已到节点'))}}"><span><span class="run-step-time">${{escapeHtml(time)}}</span><span class="run-step-name">${{escapeHtml(name)}}</span></span></div>`;
+      }}).join('');
+      box.innerHTML = rowHtml;
     }}
 
     function renderSystemHealth() {{
@@ -3106,15 +3584,12 @@ def build_html(data: Dict[str, object]) -> str:
       const paper = data.paper_trading || {{}};
       const perf = paper.performance || {{}};
       const gate = paper.trade_gate || perf.trade_gate || {{}};
+      const guard = gate.position_guard || {{}};
       const gateStatus = gate.status || (gate.snapshot_ok ? '快照可用' : '未生成');
       const gateNote = gate.message || (gate.snapshot_latest_at ? `快照时间：${{gate.snapshot_latest_at}}` : '等待模拟盘刷新生成');
+      const guardStatus = gate.position_guard_status || (guard.message ? '已检查' : '未生成');
+      const guardNote = gate.position_guard_message || guard.message || (guard.checked_at ? `检查时间：${{guard.checked_at}}` : '等待持仓实时风控写入');
       const items = [
-        {{
-          label: '原始采集',
-          value: `${{summary.total_rows || 0}} 行 · ${{summary.raw_health_status || '-'}}`,
-          note: summary.raw_health_note || `稳定线 ${{summary.raw_health_min_rows || 3000}} 行`,
-          tone: healthTone(summary.raw_health_status)
-        }},
         {{
           label: '数据日期',
           value: `${{data.trade_date || '-'}} · ${{data.freshness_status || '-'}}`,
@@ -3128,25 +3603,29 @@ def build_html(data: Dict[str, object]) -> str:
           tone: healthTone(gateStatus)
         }},
         {{
-          label: '自动刷新节点',
-          value: (phase.refresh_times || []).join(' / ') || '-',
-          note: `当前阶段：${{phase.label || '-'}}`,
-          tone: ''
+          label: '持仓风控',
+          value: guardStatus,
+          note: guardNote,
+          tone: healthTone(guardStatus)
         }},
         {{
-          label: '维护操作',
-          value: '手动补采集',
-          note: '自动刷新延迟或数据异常时使用',
-          tone: '',
-          action: true
+          label: '采集状态',
+          value: `${{summary.total_rows || 0}} 行 · ${{summary.raw_health_status || '-'}}`,
+          note: summary.raw_health_note || `稳定线 ${{summary.raw_health_min_rows || 3000}} 行`,
+          tone: healthTone(summary.raw_health_status)
+        }},
+        {{
+          label: '覆盖状态',
+          value: summary.coverage_status || '-',
+          note: `股票池缓存 ${{summary.universe_cache || 0}} 支`,
+          tone: summary.coverage_status === '覆盖偏窄' ? 'warn' : ''
         }}
       ];
       document.getElementById('systemHealth').innerHTML = items.map(item => `
-        <div class="health-item ${{item.tone}} ${{item.action ? 'compact-action' : ''}}" title="${{escapeHtml(`${{item.label}}：${{item.value}} ${{item.note}}`)}}">
+        <div class="health-item ${{item.tone}}" title="${{escapeHtml(`${{item.label}}：${{item.value}} ${{item.note}}`)}}">
           <span>${{escapeHtml(item.label)}}</span>
           <strong>${{escapeHtml(item.value)}}</strong>
           <small>${{escapeHtml(item.note)}}</small>
-          ${{item.action ? `<div class="maintenance-actions"><button class="refresh-button" id="refreshData" type="button">重新采集并发布</button><div class="refresh-state" id="refreshState"></div></div>` : ''}}
         </div>
       `).join('');
     }}
@@ -3189,7 +3668,7 @@ def build_html(data: Dict[str, object]) -> str:
       const intraday = workflow.intraday_validation_layer || {{}};
       const tail = workflow.tail_execution_layer || {{}};
       const items = [
-        ['1 盘前主题', premarket.pass_rule || premarket.purpose || '先确定主题优先级'],
+        ['1 全市场筛选', premarket.pass_rule || premarket.purpose || '先按全市场量价和风险规则筛选'],
         ['2 盘中验证', intraday.pass_rule || intraday.purpose || '看板块、量能、分时承接'],
         ['3 尾盘执行', tail.pass_rule || tail.purpose || '只在尾盘窗口按策略执行']
       ];
@@ -3279,7 +3758,7 @@ def build_html(data: Dict[str, object]) -> str:
       const note = String(row.note || '');
       const found = note.match(/(\\d{{1,2}}:\\d{{2}})/);
       if (found) return found[1].padStart(5, '0');
-      return row.action === 'BUY' ? '14:55' : '未记录';
+      return row.action === 'BUY' ? '14:54' : '未记录';
     }}
 
     function paperPnlAmount(row) {{
@@ -3581,6 +4060,7 @@ def build_html(data: Dict[str, object]) -> str:
       const snapshot = paperSnapshot();
       const perf = snapshot.perf || {{}};
       const positions = snapshot.positions || [];
+      const buyBasis = snapshot.buy_basis || [];
       const ledger = snapshot.ledger || [];
       const realized = ledger.filter(row => row.action === 'SELL').reduce((sum, row) => sum + numberValue(row.pnl_amount), 0);
       const sellRows = ledger.filter(row => row.action === 'SELL');
@@ -3656,6 +4136,27 @@ def build_html(data: Dict[str, object]) -> str:
             `;
           }}).join('')
         : '';
+      const buyBasisRows = buyBasis.length
+        ? buyBasis.map(row => {{
+            const score = numberValue(row.candidate_score);
+            const amount = numberValue(row.amount);
+            const entry = numberValue(row.entry_price);
+            const take = numberValue(row.first_take_profit_point);
+            const stop = numberValue(row.defensive_stop_point);
+            return `
+              <tr>
+                <td>${{escapeHtml(row.trade_date || '-')}}<span class="sub-line">${{escapeHtml(row.buy_time || '-')}}</span></td>
+                <td><span class="stock-name">${{escapeHtml(row.stock_name || '-')}}</span><span class="sub-line">${{escapeHtml(row.stock_code || '')}}</span></td>
+                <td>${{escapeHtml(row.pool_rank || '-')}}<span class="sub-line">评分 ${{score ? score.toFixed(2) : '-'}}</span></td>
+                <td>${{entry ? entry.toFixed(3) : '-'}}</td>
+                <td>${{numberValue(row.shares).toLocaleString('zh-CN')}}</td>
+                <td>${{money(amount)}}</td>
+                <td>${{take ? take.toFixed(2) : '-'}}<span class="sub-line">止损 ${{stop ? stop.toFixed(2) : '-'}}</span></td>
+                <td>${{escapeHtml(row.entry_reasons || row.workflow_summary || '-')}}</td>
+              </tr>
+            `;
+          }}).join('')
+        : '<tr><td colspan="8">暂无买入依据快照；可从当前持仓反推买入价格和卖出纪律。</td></tr>';
       openDetailPage('模拟交易账本', `
         <div class="paper-ledger-grid">
           <div class="paper-broker-card">
@@ -3683,7 +4184,19 @@ def build_html(data: Dict[str, object]) -> str:
                 <tbody>${{holdingRows}}</tbody>
               </table>
               <div class="paper-holding-mobile">${{holdingMobileRows}}</div>
-            ` : '<div class="paper-empty-holding">当前空仓。14:50 生成第一版推荐，14:55 用最新行情校验后才会按最终推荐建仓。</div>'}}
+            ` : '<div class="paper-empty-holding">当前空仓。14:50生成第一版推荐，14:53二次验证，14:54才会按最终推荐建仓。</div>'}}
+          </div>
+          <div class="detail-card">
+            <h3>实际买入依据</h3>
+            <p class="paper-note">这里固定展示建仓时的 A 池/买入记录依据，不跟随当前重新计算的 A 池变化。</p>
+            <div class="paper-table-wrap">
+              <table class="paper-table">
+                <thead>
+                  <tr><th>买入日期</th><th>股票</th><th>排名/评分</th><th>买入价</th><th>数量</th><th>成交额</th><th>止盈/止损</th><th>入选依据</th></tr>
+                </thead>
+                <tbody>${{buyBasisRows}}</tbody>
+              </table>
+            </div>
           </div>
           <div class="detail-card">
             <h3>月度盈亏日历</h3>
@@ -3740,6 +4253,18 @@ def build_html(data: Dict[str, object]) -> str:
       return tags.length ? tags.map(tag => `<span class="${{className}}">${{escapeHtml(tag)}}</span>`).join('') : '<span class="tag">无</span>';
     }}
 
+    function stockTagsHtml(row) {{
+      const items = [];
+      const industry = safeText(row.industry, '');
+      const board = safeText(row.board || row.universe, '');
+      if (industry) items.push(`<span class="tag industry">${{escapeHtml(industry)}}</span>`);
+      if (board && board !== industry) items.push(`<span class="tag board">${{escapeHtml(board)}}</span>`);
+      splitTags(row.theme_tags)
+        .filter(tag => tag && tag !== industry && tag !== board)
+        .forEach(tag => items.push(`<span class="tag theme">${{escapeHtml(tag)}}</span>`));
+      return items.length ? items.join('') : '<span class="tag muted">无板块</span>';
+    }}
+
     function matches(row) {{
       const text = [row.stock_code, row.stock_name, row.theme_tags, row.matched_strategies, row.entry_reasons].join(' ').toLowerCase();
       const themes = splitTags(row.theme_tags);
@@ -3771,6 +4296,8 @@ def build_html(data: Dict[str, object]) -> str:
       document.getElementById('cards').innerHTML = rows.map(row => {{
         const risks = row.risk_tags || '';
         const showRisk = hasMeaningfulRisk(risks);
+        const changeValue = numberValue(row.pct_change);
+        const changeTone = changeValue > 0 ? 'up' : changeValue < 0 ? 'down' : 'flat';
         return `
           <article class="candidate">
             <div class="candidate-head">
@@ -3779,19 +4306,19 @@ def build_html(data: Dict[str, object]) -> str:
                 <div class="name">${{escapeHtml(row.stock_name)}}</div>
                 <div class="code">${{escapeHtml(row.stock_code)}} · ${{escapeHtml(row.universe)}}</div>
               </div>
-              <div class="change">${{escapeHtml(row.pct_change)}}%</div>
+              <div class="change ${{changeTone}}" data-card-live-change="${{escapeHtml(row.stock_code)}}">${{escapeHtml(row.pct_change)}}%</div>
             </div>
             <div class="candidate-body">
               ${{row.pool_level === 'A' ? `
-                <div class="live-price-line">
-                  <span>实时价 · 5秒刷新</span>
-                  <strong data-card-live-price="${{escapeHtml(row.stock_code)}}">${{displayPrice(row) ? displayPrice(row).toFixed(2) : '-'}}</strong>
+                <div class="live-price-line ${{changeTone}}" data-card-live-row="${{escapeHtml(row.stock_code)}}">
+                  <span data-card-live-meta="${{escapeHtml(row.stock_code)}}">实时价 · 5秒刷新</span>
+                  <strong class="${{changeTone}}" data-card-live-price="${{escapeHtml(row.stock_code)}}">${{displayPrice(row) ? displayPrice(row).toFixed(2) : '-'}}</strong>
                 </div>
               ` : ''}}
-              <div class="tags">${{tagsHtml(row.theme_tags)}}${{tagsHtml(row.matched_strategies, 'tag strategy')}}</div>
+              <div class="tags">${{stockTagsHtml(row)}}${{tagsHtml(row.matched_strategies, 'tag strategy')}}</div>
               <div class="scoreline">
-                <span class="score-pill" title="基础分 ${{escapeHtml(row.base_candidate_score || row.candidate_score || '-')}}，消息辅助最高 +10">评分 ${{escapeHtml(row.candidate_score || '-')}}</span>
-                <span class="score-pill" title="${{escapeHtml(row.theme_signal_detail || '暂无消息辅助信号')}}">消息 +${{escapeHtml(row.theme_signal_score || '0')}}/10</span>
+                <span class="score-pill" title="按全市场量价、形态和风险计算；消息/主题不参与排序">评分 ${{escapeHtml(row.candidate_score || '-')}}</span>
+                <span class="score-pill" title="${{escapeHtml(row.theme_signal_detail || '暂无消息参考信号')}}；不参与排序">消息参考 +${{escapeHtml(row.theme_signal_score || '0')}}/10</span>
                 <span class="score-pill">池内排名 #${{escapeHtml(row.pool_rank || '-')}}</span>
                 <span class="score-pill">原始池 ${{escapeHtml(poolLabel[row.pool_raw_level] || row.pool_raw_level || '-')}}</span>
               </div>
@@ -3838,7 +4365,6 @@ def build_html(data: Dict[str, object]) -> str:
         state.query = event.target.value;
         renderCards();
       }});
-      document.getElementById('refreshData').addEventListener('click', refreshData);
       document.getElementById('detailBack').addEventListener('click', closeDetailPage);
       document.getElementById('focusRealtime').addEventListener('click', event => {{
         const soundButton = event.target.closest('#soundToggle');
@@ -3942,6 +4468,8 @@ def build_html(data: Dict[str, object]) -> str:
     renderCoverageNotice();
     renderFreshnessNotice();
     renderSystemHealth();
+    renderRunTimeline();
+    renderDeploymentStatus();
     renderMetrics();
     renderFunnel();
     // Theme filters, workflow notes, and rule config are intentionally hidden.
@@ -3965,6 +4493,7 @@ def main() -> None:
     args = parser.parse_args()
 
     rows = read_csv(args.input)
+    validate_official_dashboard_source(rows, args.input, args.output)
     data = to_dashboard_data(rows, args.input)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(build_html(data), encoding="utf-8")

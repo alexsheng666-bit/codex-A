@@ -23,7 +23,16 @@ EXCLUDE_PREFIXES = ("300", "301", "688", "8", "4", "9")
 POOL_CAPS = dict(DEFAULT_POOL_CAPS)
 THEME_KEYWORDS = {theme: list(keywords) for theme, keywords in DEFAULT_THEME_KEYWORDS.items()}
 DEFENSE_MODE = dict(DEFAULT_DEFENSE_MODE)
-SEVERE_RISKS = {"接近涨停", "换手过热", "尾盘放量但收盘位置弱"}
+SEVERE_RISKS = {"接近涨停", "换手过热", "尾盘放量但收盘位置弱", "核心行情字段异常", "交易状态异常"}
+A_POOL_DOWNGRADE_RISKS = {
+    "换手偏热",
+    "放量滞涨",
+    "尾盘量价背离",
+    "高位回撤偏大",
+    "跌破分时均价线",
+    "高涨幅A池确认不足",
+    "涨幅超过A池上限",
+}
 THEME_SIGNAL_PATH = ROOT / "work" / "theme_signals" / "theme_signals_latest.csv"
 THEME_SIGNAL_MAX_SCORE = 10.0
 SOURCE_RELIABILITY_SCORES = {
@@ -106,6 +115,79 @@ def add_risk(risks: List[str], condition: bool, text: str) -> None:
         risks.append(text)
 
 
+def core_quote_fields_ok(row: Dict[str, str]) -> bool:
+    return all(
+        [
+            num(row, "close") > 0,
+            num(row, "pre_close") > 0,
+            num(row, "volume") > 0,
+            num(row, "turnover_amount") > 0,
+        ]
+    )
+
+
+def trading_status_ok(row: Dict[str, str]) -> bool:
+    text = " ".join(
+        str(row.get(key, ""))
+        for key in ("trade_status", "trading_status", "status", "manual_note", "source_quality_note")
+    )
+    if not text.strip():
+        return True
+    abnormal_markers = ("停牌", "暂停交易", "退市", "无法成交", "不可交易", "涨停无法成交", "跌停无法成交")
+    return not any(marker in text for marker in abnormal_markers)
+
+
+def source_is_realtime_daily(row: Dict[str, str]) -> bool:
+    source = str(row.get("data_source", "")).lower()
+    return any(
+        marker in source
+        for marker in (
+            "minishare_rt_k",
+            "eastmoney",
+            "akshare",
+            "ths",
+        )
+    )
+
+
+def intraday_vwap_or_daily_strength(row: Dict[str, str], pct_change: float, volume_ratio: float, close_position_pct: float) -> bool:
+    if above_vwap_signal(row):
+        return True
+    if not source_is_realtime_daily(row):
+        return False
+    return pct_change >= 2 and volume_ratio >= 1.0 and close_position_pct >= 95
+
+
+def breakout_or_daily_high_close(row: Dict[str, str], pct_change: float, close_position_pct: float) -> bool:
+    if yes(row.get("break_intraday_high")) or yes(row.get("break_key_resistance")):
+        return True
+    if not source_is_realtime_daily(row):
+        return False
+    return pct_change >= 2.5 and close_position_pct >= 97
+
+
+def stepwise_or_daily_push(row: Dict[str, str], pct_change: float, volume_ratio: float, close_position_pct: float) -> bool:
+    if yes(row.get("stepwise_rise_after_1430")):
+        return True
+    if not source_is_realtime_daily(row):
+        return False
+    return 2 <= pct_change <= 6.5 and volume_ratio >= 1.0 and close_position_pct >= 94
+
+
+def theme_reflow_or_daily_theme_strength(
+    row: Dict[str, str],
+    themes: List[str],
+    pct_change: float,
+    volume_ratio: float,
+    close_position_pct: float,
+) -> bool:
+    if yes(row.get("theme_tail_reflow")):
+        return True
+    if not source_is_realtime_daily(row):
+        return False
+    return bool(themes) and pct_change >= 2 and volume_ratio >= 1.0 and close_position_pct >= 92
+
+
 def split_signal_items(value: str) -> List[str]:
     raw = str(value or "").replace("；", ";").replace("，", ",")
     items: List[str] = []
@@ -173,16 +255,14 @@ def row_theme_relevance_score(signal: Dict[str, str], row: Dict[str, str], theme
 
 def market_confirmation_score(row: Dict[str, str]) -> float:
     score = 0.0
-    if num(row, "theme_limit_up_count") >= 3 or num(row, "real_theme_limit_up_count") >= 3:
-        score += 1.0
-    if num(row, "theme_rank", 99) <= 3:
-        score += 0.7
     if 1.2 <= num(row, "volume_ratio") <= 3:
-        score += 0.5
+        score += 1.0
     if yes(row.get("theme_tail_reflow")):
-        score += 0.5
+        score += 0.7
     if above_vwap_signal(row):
-        score += 0.3
+        score += 0.6
+    if num(row, "close_position_pct") >= 98:
+        score += 0.7
     return min(3.0, score)
 
 
@@ -206,16 +286,16 @@ def theme_signal_score(
     signals_by_theme: Dict[str, List[Dict[str, str]]],
 ) -> Tuple[float, str]:
     if not themes:
-        return 0.0, "未命中重点主题，不加消息辅助分"
+        return 0.0, "未命中特定主题，消息参考分为0，不参与排序"
 
     preset = row.get("theme_signal_score") or row.get("news_signal_score")
     if preset not in (None, ""):
         score = bounded_score(preset)
-        detail = row.get("theme_signal_detail") or row.get("news_signal_detail") or "外部数据已给出消息辅助分"
+        detail = row.get("theme_signal_detail") or row.get("news_signal_detail") or "外部数据已给出消息参考分，不参与排序"
         return score, detail
 
     best_score = 0.0
-    best_detail = "暂无已接入的可靠消息源，消息辅助分为0"
+    best_detail = "暂无已接入的可靠消息源，消息参考分为0，不参与排序"
     for theme in themes:
         for signal in signals_by_theme.get(theme, []):
             manual_score = signal.get("score") or signal.get("theme_signal_score")
@@ -254,52 +334,82 @@ def match_strategies(row: Dict[str, str], themes: List[str]) -> Tuple[List[str],
     close = num(row, "close")
     open_price = num(row, "open")
 
+    add_risk(risks, not core_quote_fields_ok(row), "核心行情字段异常")
+    add_risk(risks, not trading_status_ok(row), "交易状态异常")
     add_risk(risks, pct_change >= 9.5, "接近涨停")
     add_risk(risks, turnover_rate > 12, "换手过热")
+    add_risk(risks, 10 < turnover_rate <= 12, "换手偏热")
     add_risk(risks, turnover_rate < 1, "流动性不足")
     add_risk(risks, tail_volume_ratio > 2.5 and close_position_pct < 90, "尾盘放量但收盘位置弱")
+    add_risk(risks, tail_volume_ratio > 2.5 and 90 <= close_position_pct < 95, "尾盘量价背离")
+    add_risk(risks, pct_change >= 2 and 0 < close_position_pct < 97.5, "高位回撤偏大")
+    add_risk(risks, bool(row.get("vwap_signal_source")) and not above_vwap_signal(row), "跌破分时均价线")
     add_risk(risks, volume_ratio > 3 and pct_change < 2, "放量滞涨")
-    add_risk(risks, pct_change > 6.5 and not high_gain_a_pool_gate_pass(row), "高涨幅A池确认不足")
+    add_risk(risks, pct_change > 6.5, "涨幅超过A池上限")
+
+    vwap_or_strength = intraday_vwap_or_daily_strength(row, pct_change, volume_ratio, close_position_pct)
+    breakout_signal = breakout_or_daily_high_close(row, pct_change, close_position_pct)
+    stepwise_signal = stepwise_or_daily_push(row, pct_change, volume_ratio, close_position_pct)
+    volume_confirmed = tail_volume_ratio >= 1.2 or volume_ratio >= 1.0
 
     s1 = all(
         [
-            yes(row.get("stepwise_rise_after_1430")),
-            yes(row.get("break_intraday_high")) or yes(row.get("break_key_resistance")),
+            stepwise_signal,
+            breakout_signal,
             close_position_pct >= 95,
-            tail_volume_ratio >= 1.2 or volume_ratio >= 1.5,
-            above_vwap_signal(row),
+            volume_confirmed,
+            vwap_or_strength,
         ]
     )
     if s1:
         matched.append("S1")
-        reasons.append("攻击型尾盘突破：尾盘阶梯推升、突破压力、收盘接近高位")
+        if source_is_realtime_daily(row) and not yes(row.get("stepwise_rise_after_1430")):
+            reasons.append("攻击型尾盘突破：实时日线确认涨幅、量能、收盘位置和高位突破")
+        else:
+            reasons.append("攻击型尾盘突破：尾盘阶梯推升、突破压力、收盘接近高位")
 
+    repair_signal = (
+        yes(row.get("tail_repair_after_1430"))
+        or yes(row.get("intraday_pullback_then_recover"))
+        or yes(row.get("recover_intraday_vwap"))
+        or yes(row.get("close_recover_vwap"))
+        or yes(row.get("close_above_ma5"))
+        or (source_is_realtime_daily(row) and close_position_pct >= 92 and vwap_or_strength)
+    )
     s2 = all(
         [
-            yes(row.get("ma_alignment_up")) or (ma5 > ma10 > ma20 > 0),
-            yes(row.get("pullback_to_ma10_or_ma20")),
-            yes(row.get("close_above_ma5")) or (close > ma5 > 0),
-            3 <= turnover_rate <= 8,
+            repair_signal,
+            pct_change > 0,
+            close_position_pct >= 92,
+            1.2 <= volume_ratio <= 3.0,
+            2 <= turnover_rate <= 10,
+            vwap_or_strength,
         ]
     )
     if s2:
         matched.append("S2")
-        reasons.append("均线回踩支撑：多头趋势中回踩企稳")
+        reasons.append("尾盘修复：盘中回落后尾盘修复，收盘位置、量能和均价承接通过")
 
-    s3 = all(
-        [
-            bool(themes),
-            theme_limit_up_count >= 3,
-            theme_rank <= 3,
-            3 <= pct_change <= 5.5,
-            volume_ratio >= 1.5,
-            above_vwap_signal(row),
-            yes(row.get("theme_tail_reflow")),
-        ]
+    ma_support = (
+        ma5 > ma10 > ma20 > 0
+        and close > ma5
+        and (
+            yes(row.get("pullback_to_ma10_or_ma20"))
+            or (ma10 > 0 and abs(close - ma10) / ma10 <= 0.035)
+            or (ma20 > 0 and abs(close - ma20) / ma20 <= 0.035)
+        )
+        and yes(row.get("close_above_ma5"))
+        and 3 <= turnover_rate <= 8
+        and 0 < pct_change <= 5.5
+        and close >= open_price
     )
-    if s3:
+    if ma_support:
         matched.append("S3")
-        reasons.append("主线热点回流：主题强、板块涨停扩散、尾盘回流")
+        reasons.append("均线回踩支撑：5/10/20日多头，回踩10/20日均线附近后尾盘站回5日线")
+
+    dynamic_mainline = theme_limit_up_count >= 3 and theme_rank <= 5 and 3 <= pct_change <= 5.5 and volume_ratio >= 1.5
+    if dynamic_mainline:
+        reasons.append("动态主线辅助：当日板块涨停数和强度靠前，仅作情绪延续参考，不作为固定板块加分")
 
     s4 = all(
         [
@@ -333,7 +443,7 @@ def high_gain_a_pool_gate_pass(row: Dict[str, str]) -> bool:
     pct_change = num(row, "pct_change")
     if pct_change <= 6.5:
         return True
-    return num(row, "real_theme_limit_up_count") >= 3 and has_real_tail_volume_confirm(row)
+    return False
 
 
 def above_vwap_signal(row: Dict[str, str]) -> bool:
@@ -342,24 +452,161 @@ def above_vwap_signal(row: Dict[str, str]) -> bool:
     return yes(row.get("above_vwap_most_day"))
 
 
-def choose_pool(themes: List[str], strategies: List[str], risks: List[str], row: Dict[str, str]) -> str:
-    severe_risk_count = sum(risk in SEVERE_RISKS for risk in risks)
-    theme_limit_up_count = num(row, "theme_limit_up_count")
+def primary_strategy_for(strategies: List[str], row: Dict[str, str]) -> str:
+    """Pick one executable main strategy; other matches are only confirmations."""
+    if not strategies:
+        return ""
+
+    pct_change = num(row, "pct_change")
     volume_ratio = num(row, "volume_ratio")
+    close_position_pct = num(row, "close_position_pct")
+    turnover_rate = num(row, "turnover_rate")
+
+    if (
+        "S1" in strategies
+        and 2 <= pct_change <= 5.5
+        and 1.2 <= volume_ratio <= 3.0
+        and close_position_pct >= 95
+        and above_vwap_signal(row)
+    ):
+        return "S1"
+    if (
+        "S3" in strategies
+        and 0 < pct_change <= 5.5
+        and 3 <= turnover_rate <= 8
+        and close_position_pct >= 92
+        and above_vwap_signal(row)
+    ):
+        return "S3"
+    if (
+        "S2" in strategies
+        and 0 < pct_change <= 5.5
+        and 1.2 <= volume_ratio <= 3.0
+        and close_position_pct >= 92
+        and above_vwap_signal(row)
+    ):
+        return "S2"
+    if "S4" in strategies:
+        return "S4"
+    return strategies[0]
+
+
+def strategy_score(strategies: List[str], primary_strategy: str) -> float:
+    primary_points = {
+        "S1": 42.0,
+        "S3": 36.0,
+        "S2": 30.0,
+        "S4": 10.0,
+    }
+    score = primary_points.get(primary_strategy, 0.0)
+    auxiliary = [strategy for strategy in strategies if strategy != primary_strategy and strategy in {"S1", "S2", "S3"}]
+    score += min(8.0, len(auxiliary) * 4.0)
+    return score
+
+
+def tail_execution_quality(strategies: List[str], risks: List[str], row: Dict[str, str]) -> float:
+    primary_strategy = primary_strategy_for(strategies, row)
+    pct_change = num(row, "pct_change")
+    volume_ratio = num(row, "volume_ratio")
+    turnover_rate = num(row, "turnover_rate")
+    turnover_amount = num(row, "turnover_amount")
+    close_position_pct = num(row, "close_position_pct")
+
+    quality = 0.0
+    if primary_strategy == "S1":
+        quality += 3
+    elif primary_strategy in {"S2", "S3"}:
+        quality += 2
+
+    if 2 <= pct_change <= 5.5:
+        quality += 2
+    elif 0.8 <= pct_change < 2 or 5.5 < pct_change <= 6.5:
+        quality += 0.5
+
+    if 1.2 <= volume_ratio <= 2.5:
+        quality += 2
+    elif 2.5 < volume_ratio <= 3.0:
+        quality += 1
+
+    if 3 <= turnover_rate <= 8:
+        quality += 1
+    if turnover_amount >= 300_000_000:
+        quality += 1
+    if close_position_pct >= 98:
+        quality += 2
+    elif close_position_pct >= 95:
+        quality += 1
+    if above_vwap_signal(row):
+        quality += 1
+    if has_real_tail_volume_confirm(row):
+        quality += 1
+
+    quality -= sum(2.0 for risk in risks if risk in SEVERE_RISKS)
+    quality -= sum(1.0 for risk in risks if risk in A_POOL_DOWNGRADE_RISKS)
+    return quality
+
+
+def choose_pool(themes: List[str], strategies: List[str], risks: List[str], row: Dict[str, str], score: float) -> str:
+    severe_risk_count = sum(risk in SEVERE_RISKS for risk in risks)
+    a_downgrade_count = sum(risk in A_POOL_DOWNGRADE_RISKS for risk in risks)
+    volume_ratio = num(row, "volume_ratio")
+    pct_change = num(row, "pct_change")
+    close_position_pct = num(row, "close_position_pct")
+    turnover_amount = num(row, "turnover_amount")
+    primary_strategy = primary_strategy_for(strategies, row)
+    has_strategy = bool(primary_strategy)
+    healthy_volume = 1.2 <= volume_ratio <= 3.0
+    candidate_volume = 1.1 <= volume_ratio <= 3.2
+    healthy_turnover_amount = turnover_amount >= 300_000_000
+    candidate_turnover_amount = turnover_amount >= 100_000_000
+    positive_day = pct_change > 0
+    strong_close = close_position_pct >= 95
+    candidate_close = close_position_pct >= 90 and above_vwap_signal(row)
+    a_pool_gain_ok = pct_change <= 6.5
+    low_volume_only = "S4" in strategies and not any(strategy in strategies for strategy in ("S1", "S2", "S3"))
+    execution_quality = tail_execution_quality(strategies, risks, row)
 
     if severe_risk_count >= 2:
         return "C"
-    if ("S1" in strategies or "S3" in strategies) and themes and severe_risk_count == 0:
+    if low_volume_only:
+        return "C"
+    if (
+        score >= defense_min_score("A")
+        and severe_risk_count == 0
+        and a_downgrade_count == 0
+        and a_pool_gain_ok
+        and positive_day
+        and has_strategy
+        and primary_strategy in {"S1", "S2", "S3"}
+        and 2 <= pct_change <= 5.5
+        and healthy_volume
+        and healthy_turnover_amount
+        and strong_close
+        and above_vwap_signal(row)
+        and execution_quality >= 8
+    ):
         if not high_gain_a_pool_gate_pass(row):
             return "B"
         return "A"
-    if "S2" in strategies or ("S3" in strategies and severe_risk_count <= 1):
+    if (
+        score >= defense_min_score("B")
+        and severe_risk_count <= 1
+        and positive_day
+        and pct_change <= 6.5
+        and (
+            (primary_strategy in {"S1", "S2", "S3"} and candidate_volume and candidate_turnover_amount and candidate_close)
+            or (volume_ratio >= 1.2 and close_position_pct >= 90 and candidate_turnover_amount)
+        )
+    ):
         return "B"
-    if "S4" in strategies:
+    if (
+        severe_risk_count <= 1
+        and volume_ratio >= 1.2
+        and 1.5 <= pct_change <= 6.5
+        and close_position_pct >= 88
+    ):
         return "C"
-    if themes and theme_limit_up_count >= 3 and volume_ratio >= 1.2:
-        return "B"
-    if themes:
+    if "S4" in strategies:
         return "C"
     return ""
 
@@ -370,57 +617,84 @@ def candidate_score(themes: List[str], strategies: List[str], risks: List[str], 
     turnover_rate = num(row, "turnover_rate")
     turnover_amount = num(row, "turnover_amount")
     close_position_pct = num(row, "close_position_pct")
+    primary_strategy = primary_strategy_for(strategies, row)
 
     score = 0.0
-    if themes:
-        score += 25 + min(len(themes), 3) * 3
-    if "S1" in strategies:
-        score += 35
-    if "S3" in strategies:
-        score += 30
-    if "S2" in strategies:
+    score += strategy_score(strategies, primary_strategy)
+
+    if 2 <= pct_change <= 5.5:
         score += 18
-    if "S4" in strategies:
-        score += 8
-
-    if 2 <= pct_change < 9.5:
-        score += min(15, pct_change * 2)
+        if 3.0 <= pct_change <= 4.8:
+            score += 5
+        elif 2.4 <= pct_change < 3.0 or 4.8 < pct_change <= 5.2:
+            score += 3
+        else:
+            score += 1
+    elif 5.5 < pct_change <= 6.5:
+        score += 5
+    elif 0 < pct_change < 2:
+        score += 4
+    elif 6.5 < pct_change < 9.5:
+        score -= 12
     elif pct_change >= 9.5:
-        score -= 18
+        score -= 24
     elif pct_change < 0:
-        score -= 10
+        score -= 12
 
-    if 1.2 <= volume_ratio <= 3:
-        score += min(10, volume_ratio * 3)
+    if 1.2 <= volume_ratio <= 2.5:
+        score += 12
+        score += max(0.0, 4.0 - abs(volume_ratio - 1.8) * 3.0)
+    elif 2.5 < volume_ratio <= 3:
+        score += 7
+    elif 1.0 <= volume_ratio < 1.2:
+        score += 2
     elif volume_ratio > 3:
-        score -= 5
+        score -= 8
 
-    if 2 <= turnover_rate <= 10:
-        score += 8
+    if 3 <= turnover_rate <= 8:
+        score += 10
+        score += max(0.0, 3.0 - abs(turnover_rate - 5.5) * 0.8)
+    elif 2 <= turnover_rate < 3 or 8 < turnover_rate <= 10:
+        score += 5
+    elif 10 < turnover_rate <= 12:
+        score -= 6
     elif turnover_rate < 1:
         score -= 10
     elif turnover_rate > 12:
         score -= 12
 
     if turnover_amount >= 1_000_000_000:
-        score += 10
+        score += 8
+        score += min(4.0, turnover_amount / 2_000_000_000)
     elif turnover_amount >= 300_000_000:
         score += 6
+        score += min(2.0, turnover_amount / 1_000_000_000)
     elif turnover_amount >= 100_000_000:
         score += 3
     elif turnover_amount and turnover_amount < 50_000_000:
         score -= 5
 
     if close_position_pct >= 98:
-        score += 8
+        score += 14
+        score += min(3.0, (close_position_pct - 98) * 1.5)
     elif close_position_pct >= 95:
-        score += 5
+        score += 8
+        score += min(2.0, (close_position_pct - 95) * 0.8)
+    elif close_position_pct >= 92:
+        score += 3
     elif close_position_pct < 85:
-        score -= 8
+        score -= 10
+
+    if above_vwap_signal(row):
+        score += 6
+    if has_real_tail_volume_confirm(row):
+        score += 4
 
     for risk in risks:
-        if risk in {"接近涨停", "换手过热", "尾盘放量但收盘位置弱"}:
-            score -= 18
+        if risk in SEVERE_RISKS:
+            score -= 22
+        elif risk in A_POOL_DOWNGRADE_RISKS:
+            score -= 12
         elif risk == "流动性不足":
             score -= 8
         else:
@@ -434,14 +708,22 @@ def score_reasons(themes: List[str], strategies: List[str], risks: List[str], ro
     turnover_rate = num(row, "turnover_rate")
     turnover_amount = num(row, "turnover_amount")
     close_position_pct = num(row, "close_position_pct")
+    primary_strategy = primary_strategy_for(strategies, row)
     reasons: List[str] = []
 
     if themes:
-        reasons.append(f"命中主题：{';'.join(themes)}")
+        reasons.append(f"主题/行业备注：{';'.join(themes)}（不加基础分）")
     if strategies:
-        reasons.append(f"策略信号：{';'.join(strategies)}")
-    if 2 <= pct_change < 9.5:
-        reasons.append("涨幅处于短线可观察区间")
+        if primary_strategy:
+            reasons.append(f"主策略：{primary_strategy}；辅助确认：{';'.join(strategy for strategy in strategies if strategy != primary_strategy) or '无'}")
+        else:
+            reasons.append(f"策略信号：{';'.join(strategies)}")
+    if 2 <= pct_change <= 5.5:
+        reasons.append("涨幅处于尾盘买入次日卖出优先区间")
+    elif 5.5 < pct_change <= 6.5:
+        reasons.append("涨幅偏强，需观察次日兑现风险")
+    elif 6.5 < pct_change < 9.5:
+        reasons.append("涨幅过高，需通过尾盘量价确认")
     elif pct_change >= 9.5:
         reasons.append("接近涨停扣分")
     elif pct_change < 0:
@@ -454,6 +736,8 @@ def score_reasons(themes: List[str], strategies: List[str], risks: List[str], ro
 
     if 2 <= turnover_rate <= 10:
         reasons.append("换手处于活跃区间")
+    elif 10 < turnover_rate <= 12:
+        reasons.append("换手偏热，A池降级观察")
     elif turnover_rate < 1:
         reasons.append("换手偏低扣分")
     elif turnover_rate > 12:
@@ -521,7 +805,7 @@ def apply_empty_market_defense(rows: List[Dict[str, str]]) -> None:
             row["pool_level"] = ""
             row["tail_execution_layer"] = "空仓等待"
             row["tail_execution_detail"] = "行情或信号不足，没有合适股票可以不推"
-            row["workflow_summary"] = f"盘前主题：{row.get('premarket_layer', '')}；盘中验证：{row.get('intraday_layer', '')}；尾盘执行：空仓等待"
+            row["workflow_summary"] = f"全市场筛选：{row.get('premarket_layer', '')}；盘中验证：{row.get('intraday_layer', '')}；尾盘执行：空仓等待"
             row["buy_point"] = ""
             row["sell_point"] = ""
             row["stop_point"] = ""
@@ -553,36 +837,34 @@ def workflow_assessment(
     theme_rank = num(row, "theme_rank", 99)
 
     severe_risk_count = sum(risk in SEVERE_RISKS for risk in risks)
+    a_downgrade_count = sum(risk in A_POOL_DOWNGRADE_RISKS for risk in risks)
 
     if themes:
-        premarket_status = "通过"
-        premarket_detail = f"命中重点主题：{';'.join(themes)}"
+        premarket_status = "主题备注"
+        premarket_detail = f"主题/行业备注：{';'.join(themes)}，不参与排序和入池资格"
     else:
-        premarket_status = "未命中"
-        premarket_detail = "未命中当前重点主题，暂不进入主线优先级"
+        premarket_status = "全盘筛选"
+        premarket_detail = "未命中特定主题，按全市场量价、形态和风险规则筛选"
 
     validation_signals: List[str] = []
     if 1.2 <= volume_ratio <= 3 or tail_volume_ratio >= 1.2:
         validation_signals.append("量能承接")
     if above_vwap_signal(row):
         validation_signals.append("分时强于均价线")
-    if theme_limit_up_count >= 3 or theme_rank <= 3:
-        validation_signals.append("板块联动")
     if close_position_pct >= 95:
         validation_signals.append("收盘位置强")
     if strategies:
         validation_signals.append("形态命中")
-    if 0 <= pct_change < 9.5 and turnover_rate <= 12:
+    if 2 <= pct_change <= 5.5 and turnover_rate <= 10:
+        validation_signals.append("涨幅处于次日策略优先区间")
+    elif 0 < pct_change <= 6.5 and turnover_rate <= 12:
         validation_signals.append("涨幅/换手未过热")
     if pct_change > 6.5:
-        if high_gain_a_pool_gate_pass(row):
-            validation_signals.append("高涨幅已通过A池确认")
-        else:
-            validation_signals.append("高涨幅需板块涨停和真实尾盘量确认")
+        validation_signals.append("涨幅超过A池上限，只能降级观察")
+    if a_downgrade_count:
+        validation_signals.append("存在A池降级风险")
 
-    if not themes:
-        intraday_status = "不足"
-    elif severe_risk_count >= 2:
+    if severe_risk_count >= 2:
         intraday_status = "降级"
     elif len(validation_signals) >= 2:
         intraday_status = "通过"
@@ -590,17 +872,17 @@ def workflow_assessment(
         intraday_status = "待确认"
     else:
         intraday_status = "不足"
-    intraday_detail = "；".join(validation_signals) if validation_signals else "等待板块、量能、分时承接确认"
+    intraday_detail = "；".join(validation_signals) if validation_signals else "等待量能、分时、形态或收盘位置确认"
 
-    if pool == "A" and strategies and intraday_status == "通过" and severe_risk_count == 0:
+    if pool == "A" and strategies and intraday_status == "通过" and severe_risk_count == 0 and a_downgrade_count == 0:
         tail_status = "可尾盘观察"
-        tail_detail = "14:50生成第一版推荐；14:55按最新价格、成交量、换手率等二次校验后生成最终推荐并模拟盘执行，不追直线急拉"
+        tail_detail = "14:50生成第一版推荐；14:53按实时日线/分钟线、价格、成交量、换手率等二次校验；14:54模拟盘执行，不追直线急拉"
     elif pool and strategies:
         tail_status = "等待确认"
         tail_detail = "有策略形态，但需先排除过热、跳水或承接不足"
     elif pool:
-        tail_status = "题材记录"
-        tail_detail = "仅作为题材异动或候补记录，暂不进入尾盘执行"
+        tail_status = "异动记录"
+        tail_detail = "仅作为全市场量价异动或候补记录，暂不进入尾盘执行"
     else:
         tail_status = "不执行"
         tail_detail = "未进入候选池"
@@ -612,7 +894,7 @@ def workflow_assessment(
         "intraday_detail": intraday_detail,
         "tail_execution_layer": tail_status,
         "tail_execution_detail": tail_detail,
-        "workflow_summary": f"盘前主题：{premarket_status}；盘中验证：{intraday_status}；尾盘执行：{tail_status}",
+        "workflow_summary": f"全市场筛选：{premarket_status}；盘中验证：{intraday_status}；尾盘执行：{tail_status}",
     }
 
 
@@ -652,14 +934,14 @@ def execution_points(pool: str, strategies: List[str], row: Dict[str, str]) -> D
         target_pct = 2.0
         stop_pct = 2.5
         basis = "S1尾盘突破：第一止盈+2.0%，防守止损-2.5%；强势票按移动止盈跟踪"
-    elif "S3" in strategies:
-        target_pct = 2.0
-        stop_pct = 2.5
-        basis = "S3主线回流：买入按尾盘参考价，止盈+2.0%，止损-2.5%"
     elif "S2" in strategies:
         target_pct = 1.8
         stop_pct = 2.3
-        basis = "S2均线支撑：买入按尾盘参考价，止盈+1.8%，止损-2.3%"
+        basis = "S2尾盘修复：买入按尾盘参考价，止盈+1.8%，止损-2.3%；强势确认后进入移动止盈"
+    elif "S3" in strategies:
+        target_pct = 1.8
+        stop_pct = 2.3
+        basis = "S3均线回踩支撑：第一止盈+1.8%，防守止损-2.3%；次日跌破买入日收盘支撑即退出"
     elif "S4" in strategies:
         target_pct = 2.0
         stop_pct = 2.5
@@ -697,27 +979,74 @@ def enforce_pool_caps(rows: List[Dict[str, str]]) -> None:
         for index, row in enumerate(pool_rows, start=1):
             row["pool_rank"] = str(index)
             if index > cap:
-                row["pool_cap_note"] = f"超过{pool}池每日上限{cap}只，保留为未入池记录"
-                row["pool_level"] = ""
-                row["tail_execution_layer"] = "未入池"
-                row["tail_execution_detail"] = "超过当日池级上限，只保留为后台记录"
-                row["workflow_summary"] = f"盘前主题：{row.get('premarket_layer', '')}；盘中验证：{row.get('intraday_layer', '')}；尾盘执行：未入池"
-                row["buy_point"] = ""
-                row["sell_point"] = ""
-                row["stop_point"] = ""
-                row["first_take_profit_point"] = ""
-                row["strong_follow_rule"] = ""
-                row["defensive_stop_point"] = ""
-                row["moving_take_profit_rule"] = ""
-                row["point_basis"] = ""
-                row["next_day_valid_if"] = ""
-                row["next_day_weak_if"] = ""
-                row["next_day_remove_if"] = ""
+                if pool == "A":
+                    row["pool_cap_note"] = f"超过A池每日上限{cap}只，不顺延到B/C，保留为后台记录"
+                    row["pool_level"] = ""
+                    row["tail_execution_layer"] = "未入池"
+                    row["tail_execution_detail"] = "A池名额已满；为保持B/C池含义清晰，不降入候补池"
+                    row["workflow_summary"] = f"全市场筛选：{row.get('premarket_layer', '')}；盘中验证：{row.get('intraday_layer', '')}；尾盘执行：未入池"
+                    row["buy_point"] = ""
+                    row["sell_point"] = ""
+                    row["stop_point"] = ""
+                    row["first_take_profit_point"] = ""
+                    row["strong_follow_rule"] = ""
+                    row["defensive_stop_point"] = ""
+                    row["moving_take_profit_rule"] = ""
+                    row["point_basis"] = ""
+                    row["next_day_valid_if"] = ""
+                    row["next_day_weak_if"] = ""
+                    row["next_day_remove_if"] = ""
+                elif pool == "B":
+                    row["pool_cap_note"] = f"超过B池每日上限{cap}只，不顺延到C池，保留为后台记录"
+                    row["pool_level"] = ""
+                    row["tail_execution_layer"] = "未入池"
+                    row["tail_execution_detail"] = "B池名额已满；为保持C池为异动观察，不降入C池"
+                    row["workflow_summary"] = f"全市场筛选：{row.get('premarket_layer', '')}；盘中验证：{row.get('intraday_layer', '')}；尾盘执行：未入池"
+                    row["buy_point"] = ""
+                    row["sell_point"] = ""
+                    row["stop_point"] = ""
+                    row["first_take_profit_point"] = ""
+                    row["strong_follow_rule"] = ""
+                    row["defensive_stop_point"] = ""
+                    row["moving_take_profit_rule"] = ""
+                    row["point_basis"] = ""
+                    row["next_day_valid_if"] = ""
+                    row["next_day_weak_if"] = ""
+                    row["next_day_remove_if"] = ""
+                else:
+                    row["pool_cap_note"] = f"超过{pool}池每日上限{cap}只，保留为未入池记录"
+                    row["pool_level"] = ""
+                    row["tail_execution_layer"] = "未入池"
+                    row["tail_execution_detail"] = "超过当日池级上限，只保留为后台记录"
+                    row["workflow_summary"] = f"全市场筛选：{row.get('premarket_layer', '')}；盘中验证：{row.get('intraday_layer', '')}；尾盘执行：未入池"
+                    row["buy_point"] = ""
+                    row["sell_point"] = ""
+                    row["stop_point"] = ""
+                    row["first_take_profit_point"] = ""
+                    row["strong_follow_rule"] = ""
+                    row["defensive_stop_point"] = ""
+                    row["moving_take_profit_rule"] = ""
+                    row["point_basis"] = ""
+                    row["next_day_valid_if"] = ""
+                    row["next_day_weak_if"] = ""
+                    row["next_day_remove_if"] = ""
 
 
 def next_day_plan(pool: str, strategies: List[str]) -> Tuple[str, str, str]:
     if not pool:
         return "", "", ""
+    if "S3" in strategies:
+        return (
+            "高开或平开后维持在买入日收盘支撑上方，冲高+1.5%-3%分批止盈",
+            "9:45前不能站稳分时均价线或跌回买入日收盘支撑，先退出",
+            "跌破买入日收盘支撑或10:30前仍未走强，直接认错退出",
+        )
+    if "S4" in strategies and not any(strategy in strategies for strategy in ("S1", "S2", "S3")):
+        return (
+            "仅观察底部首阳是否延续，不作为主买入策略",
+            "若次日不能放量站回短均线，继续观察或移出",
+            "跌回前低或流动性不足，取消关注",
+        )
     return (
         "高开0.5%-3%且冲到第一止盈点，先卖50%；放量继续上攻则小仓跟踪",
         "平开或小幅高开，9:45前站不上分时均价线卖出；10:30前未走强退出或降到观察仓",
@@ -735,14 +1064,20 @@ def process_rows(rows: Iterable[Dict[str, str]]) -> List[Dict[str, str]]:
         eligible, universe, exclude_reason = detect_universe(row, code)
         themes = detect_themes(row) if eligible else []
         strategies, reasons, risks = match_strategies(row, themes) if eligible else ([], [], [])
+        primary_strategy = primary_strategy_for(strategies, row) if eligible else ""
+        ordered_strategies = (
+            [primary_strategy] + [strategy for strategy in strategies if strategy != primary_strategy]
+            if primary_strategy
+            else strategies
+        )
         base_score = candidate_score(themes, strategies, risks, row) if eligible else 0
-        raw_pool = choose_pool(themes, strategies, risks, row) if eligible else ""
-        pool, defense_note = apply_defense_gate(raw_pool, base_score, risks) if eligible else ("", "")
         signal_score, signal_detail = theme_signal_score(row, themes, risks, signals_by_theme) if eligible else (0.0, "")
-        score = round(base_score + signal_score, 2) if eligible else 0
+        score = base_score if eligible else 0
+        raw_pool = choose_pool(themes, strategies, risks, row, score) if eligible else ""
+        pool, defense_note = apply_defense_gate(raw_pool, score, risks) if eligible else ("", "")
         score_reason_text = score_reasons(themes, strategies, risks, row) if eligible else ""
         if eligible:
-            score_reason_text = f"{score_reason_text}；消息辅助：+{signal_score:g}/10，{signal_detail}"
+            score_reason_text = f"{score_reason_text}；消息/主题参考：+{signal_score:g}/10，{signal_detail}（不参与排序和入池）"
         workflow = workflow_assessment(row, themes, strategies, risks, pool) if eligible else {
             "premarket_layer": "",
             "premarket_detail": "",
@@ -757,9 +1092,9 @@ def process_rows(rows: Iterable[Dict[str, str]]) -> List[Dict[str, str]]:
             reasons.append(defense_note)
             score_reason_text = f"{score_reason_text}；{defense_note}" if score_reason_text else defense_note
         if pool and not reasons:
-            reasons.append(f"重点主题观察：命中{';'.join(themes)}，等待量价或板块延续确认")
-        valid_if, weak_if, remove_if = next_day_plan(pool, strategies)
-        points = execution_points(pool, strategies, row) if eligible else {
+            reasons.append("全市场量价观察：等待量价或形态延续确认")
+        valid_if, weak_if, remove_if = next_day_plan(pool, ordered_strategies)
+        points = execution_points(pool, ordered_strategies, row) if eligible else {
             "buy_point": "",
             "sell_point": "",
             "stop_point": "",
@@ -776,9 +1111,9 @@ def process_rows(rows: Iterable[Dict[str, str]]) -> List[Dict[str, str]]:
                 "universe_eligible": "是" if eligible else "否",
                 "exclude_reason": exclude_reason,
                 "theme_tags": ";".join(themes),
-                "is_focus_theme": "是" if themes else "否",
+                "is_focus_theme": "否",
                 "matched_strategies": ";".join(strategies),
-                "primary_strategy": strategies[0] if strategies else "",
+                "primary_strategy": primary_strategy,
                 "base_candidate_score": base_score,
                 "theme_signal_score": signal_score,
                 "theme_signal_detail": signal_detail,
@@ -855,7 +1190,7 @@ def write_report(path: Path, rows: List[Dict[str, str]], source: Path) -> None:
         "",
     ]
 
-    for pool, label in (("A", "重点关注"), ("B", "观察候补"), ("C", "题材异动记录")):
+    for pool, label in (("A", "重点关注"), ("B", "观察候补"), ("C", "异动记录")):
         pool_rows = summarize_by_pool(rows, pool)
         lines.extend([f"## {pool} 池：{label}", ""])
         if not pool_rows:
@@ -869,7 +1204,7 @@ def write_report(path: Path, rows: List[Dict[str, str]], source: Path) -> None:
                     f"- **主题**：{markdown_tags(row.get('theme_tags', ''))}",
                     f"- **策略**：{markdown_tags(row.get('matched_strategies', ''))}",
                     f"- **涨跌幅 / 量比 / 换手**：{row.get('pct_change', '')}% / {row.get('volume_ratio', '')} / {row.get('turnover_rate', '')}%",
-                    f"- **评分**：总分 {row.get('candidate_score', '')} / 基础 {row.get('base_candidate_score', '')} / 消息辅助 +{row.get('theme_signal_score', '0')}/10（{row.get('theme_signal_detail', '')}）",
+                    f"- **评分**：总分 {row.get('candidate_score', '')} / 基础 {row.get('base_candidate_score', '')} / 消息参考 +{row.get('theme_signal_score', '0')}/10（不参与排序；{row.get('theme_signal_detail', '')}）",
                     f"- **三层逻辑**：{row.get('workflow_summary', '') or '待补充'}",
                     f"- **规则点位**：买入 {row.get('buy_point', '') or '-'} / 第一止盈 {row.get('first_take_profit_point', '') or '-'} / 强势跟踪 {row.get('strong_follow_rule', '') or '-'} / 防守止损 {row.get('defensive_stop_point', '') or '-'}",
                     f"- **入选原因**：{row.get('entry_reasons', '') or '暂无'}",
@@ -915,7 +1250,7 @@ def write_html_report(path: Path, rows: List[Dict[str, str]], source: Path) -> N
         return f'<div class="metric {tone}"><span>{esc(label)}</span><strong>{esc(value)}</strong></div>'
 
     cards = []
-    for pool, label in (("A", "重点关注"), ("B", "观察候补"), ("C", "题材异动记录")):
+    for pool, label in (("A", "重点关注"), ("B", "观察候补"), ("C", "异动记录")):
         pool_rows = summarize_by_pool(rows, pool)
         cards.append(f'<section class="pool-section pool-{pool.lower()}">')
         cards.append(
@@ -944,7 +1279,7 @@ def write_html_report(path: Path, rows: List[Dict[str, str]], source: Path) -> N
                   <div class="numbers">
                     <span>量比 <strong>{esc(row.get("volume_ratio"))}</strong></span>
                     <span>换手 <strong>{esc(row.get("turnover_rate"))}%</strong></span>
-                    <span>消息 <strong>+{esc(row.get("theme_signal_score") or "0")}/10</strong></span>
+                    <span>消息参考 <strong>+{esc(row.get("theme_signal_score") or "0")}/10</strong></span>
                   </div>
                   <div class="block">
                     <span class="label">三层逻辑</span>
